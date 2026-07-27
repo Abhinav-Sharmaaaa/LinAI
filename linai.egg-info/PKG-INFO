@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: linai
+Version: 0.1.0
+Summary: Lightweight Linux AI assistant with NVIDIA NIM API support
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"

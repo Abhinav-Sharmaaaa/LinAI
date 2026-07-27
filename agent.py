@@ -12,22 +12,23 @@ from linai.config import API_URL, STREAM_READ_SIZE
 from linai.tools import TOOL_DISPATCH, TOOL_SPECS
 
 SYSTEM_MSG = (
-    "You are linai, a terminal Linux assistant. "
-    "You have full access to the user's $HOME (read_file, write_file, edit_file, list_dir, grep_file, search_dir). "
+    "You are linai, a terminal AI assistant for Linux and Windows. "
+    "You have full access to the user's home directory (read_file, write_file, edit_file, list_dir, grep_file, search_dir). "
     "Read system paths with read_system_file. "
-    "Run shell commands with run_cmd (timeout ≤ 30s, cwd=$HOME). "
+    "Run shell commands with run_cmd (timeout ≤ 30s, cwd=home). "
     "Search the web with web_search when you need current info or don't know something. "
     "Create and execute multi-step workflows with create_workflow / execute_workflow / list_workflows. "
     "Analyze disk with free_up_space; clean caches with clean_cache(dry_run=false). "
     "Be concise. Use tools freely — no need to ask confirmation for routine operations. "
-    "After edits, summarize the change in one line."
+    "After edits, summarize the change in one line. "
+    "You are linai — not a generic AI model. Answer as linai."
 )
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def _get_headers() -> dict:
-    """Get fresh headers with current API key (supports ck alias key switching)."""
+    """Get fresh headers with current API key."""
     from linai.config import _get_openrouter_key
     return {
         "Authorization": f"Bearer {_get_openrouter_key()}",

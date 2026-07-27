@@ -221,52 +221,110 @@ def get_system_status() -> str:
 
     # Disk
     try:
-        r = subprocess.run(
-            ["df", "/", "--output=used,size,pcent"],
-            capture_output=True, text=True, timeout=3,
-        )
-        lines = r.stdout.strip().splitlines()
-        if len(lines) >= 2:
-            cols = lines[1].split()
-            if len(cols) >= 3:
-                parts.append(f"disk: {cols[0]}/{cols[1]} ({cols[2]})")
+        if os.name == "nt":
+            # Windows: use wmic
+            r = subprocess.run(
+                ["wmic", "logicaldisk", "get", "size,freespace,caption"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in r.stdout.strip().splitlines():
+                if line.strip() and not line.startswith("Caption"):
+                    parts_ = line.split()
+                    if len(parts_) >= 3:
+                        free = int(parts_[0]) // (1024**3)
+                        total = int(parts_[1]) // (1024**3)
+                        pct = int((1 - free/total) * 100) if total > 0 else 0
+                        parts.append(f"disk: {free}G/{total}G ({pct}%)")
+                        break
+        else:
+            r = subprocess.run(
+                ["df", "/", "--output=used,size,pcent"],
+                capture_output=True, text=True, timeout=3,
+            )
+            lines = r.stdout.strip().splitlines()
+            if len(lines) >= 2:
+                cols = lines[1].split()
+                if len(cols) >= 3:
+                    parts.append(f"disk: {cols[0]}/{cols[1]} ({cols[2]})")
     except Exception:
         pass
 
-    # Load
-    try:
-        with open("/proc/loadavg") as f:
-            load = f.read().split()[0]
-        parts.append(f"load: {load}")
-    except Exception:
-        pass
+    # Load (Linux/macOS only)
+    if os.name != "nt":
+        try:
+            with open("/proc/loadavg") as f:
+                load = f.read().split()[0]
+            parts.append(f"load: {load}")
+        except Exception:
+            pass
 
     # Memory
     try:
-        r = subprocess.run(
-            ["free", "-h"], capture_output=True, text=True, timeout=3,
-        )
-        for line in r.stdout.splitlines():
-            if line.startswith("Mem:"):
-                cols = line.split()
-                if len(cols) >= 3:
-                    parts.append(f"mem: {cols[1]}/{cols[2]}")
-                break
+        if os.name == "nt":
+            # Windows: use wmic
+            r = subprocess.run(
+                ["wmic", "OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory", "/value"],
+                capture_output=True, text=True, timeout=5,
+            )
+            total = free = 0
+            for line in r.stdout.strip().splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == "TotalVisibleMemorySize":
+                        total = int(v.strip()) // 1024
+                    elif k.strip() == "FreePhysicalMemory":
+                        free = int(v.strip()) // 1024
+            if total > 0:
+                used = total - free
+                parts.append(f"mem: {used}M/{total}M")
+        else:
+            r = subprocess.run(
+                ["free", "-h"], capture_output=True, text=True, timeout=3,
+            )
+            for line in r.stdout.splitlines():
+                if line.startswith("Mem:"):
+                    cols = line.split()
+                    if len(cols) >= 3:
+                        parts.append(f"mem: {cols[1]}/{cols[2]}")
+                    break
     except Exception:
         pass
 
     # Uptime
     try:
-        r = subprocess.run(
-            ["uptime", "-p"], capture_output=True, text=True, timeout=3,
-        )
-        parts.append(f"up: {r.stdout.strip().removeprefix('up ')}")
+        if os.name == "nt":
+            # Windows uptime
+            r = subprocess.run(
+                ["wmic", "os", "get", "LastBootUpTime", "/value"],
+                capture_output=True, text=True, timeout=5,
+            )
+            import datetime
+            for line in r.stdout.strip().splitlines():
+                if "=" in line:
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        # WMI format: 20240115123456.000000+000
+                        boot = datetime.datetime.strptime(val[:14], "%Y%m%d%H%M%S")
+                        up = datetime.datetime.now() - boot
+                        days = up.days
+                        hours = up.seconds // 3600
+                        mins = (up.seconds % 3600) // 60
+                        if days:
+                            parts.append(f"up: {days}d {hours}h {mins}m")
+                        else:
+                            parts.append(f"up: {hours}h {mins}m")
+                        break
+        else:
+            r = subprocess.run(
+                ["uptime", "-p"], capture_output=True, text=True, timeout=3,
+            )
+            parts.append(f"up: {r.stdout.strip().removeprefix('up ')}")
     except Exception:
         pass
 
     # Hostname
     try:
-        parts.append(f"host: {os.uname().nodename}")
+        parts.append(f"host: {os.uname().nodename if hasattr(os, 'uname') else os.environ.get('COMPUTERNAME', 'unknown')}")
     except Exception:
         pass
 
@@ -275,19 +333,31 @@ def get_system_status() -> str:
 
 def get_disk_free_report() -> str:
     """Probe common reclaimable areas. Returns a ranked table."""
-    probes: list[tuple[str, list[str]]] = [
-        ("~/.cache/",              ["du", "-sh", str(HOME / ".cache")]),
-        ("journal",                ["journalctl", "--disk-usage"]),
-        ("/var/log/",              ["du", "-sh", "/var/log"]),
-        ("/var/tmp/",              ["du", "-sh", "/var/tmp"]),
-        ("/tmp/",                  ["du", "-sh", "/tmp"]),
-        ("trash",                  ["du", "-sh", str(HOME / ".local/share/Trash/files")]),
-        ("npm cache",              ["du", "-sh", str(HOME / ".npm/_cacache")]),
-        ("pacman cache",           ["du", "-sh", "/var/cache/pacman/pkg"]),
-        ("yay cache",              ["du", "-sh", str(HOME / ".cache/yay")]),
-        ("flatpak unused",         ["flatpak", "uninstall", "--unused", "-y", "--dry-run"]),
-        ("docker",                 ["docker", "system", "df"]),
-    ]
+    if os.name == "nt":
+        # Windows cache locations
+        probes: list[tuple[str, list[str]]] = [
+            ("TEMP",           ["powershell", "-c", "Get-ChildItem $env:TEMP -Recurse -ErrorAction SilentlyContinue | Measure-Object -Sum Length"]),
+            ("Recycle Bin",    ["powershell", "-c", "Get-ChildItem 'shell:RecycleBinFolder' -Recurse -ErrorAction SilentlyContinue | Measure-Object -Sum Length"]),
+            ("npm cache",      ["powershell", "-c", "Get-ChildItem '~\\.npm\\_cacache' -Recurse -ErrorAction SilentlyContinue | Measure-Object -Sum Length"]),
+            ("pip cache",      ["powershell", "-c", "Get-ChildItem '~\\AppData\\Local\\pip\\Cache' -Recurse -ErrorAction SilentlyContinue | Measure-Object -Sum Length"]),
+            ("Chocolatey",     ["powershell", "-c", "Get-ChildItem 'C:\\ProgramData\\chocolatey\\lib' -Recurse -ErrorAction SilentlyContinue | Measure-Object -Sum Length"]),
+            ("Docker",         ["docker", "system", "df"]),
+        ]
+    else:
+        probes = [
+            ("~/.cache/",              ["du", "-sh", str(HOME / ".cache")]),
+            ("journal",                ["journalctl", "--disk-usage"]),
+            ("/var/log/",              ["du", "-sh", "/var/log"]),
+            ("/var/tmp/",              ["du", "-sh", "/var/tmp"]),
+            ("/tmp/",                  ["du", "-sh", "/tmp"]),
+            ("trash",                  ["du", "-sh", str(HOME / ".local/share/Trash/files")]),
+            ("npm cache",              ["du", "-sh", str(HOME / ".npm/_cacache")]),
+            ("pacman cache",           ["du", "-sh", "/var/cache/pacman/pkg"]),
+            ("yay cache",              ["du", "-sh", str(HOME / ".cache/yay")]),
+            ("flatpak unused",         ["flatpak", "uninstall", "--unused", "-y", "--dry-run"]),
+            ("docker",                 ["docker", "system", "df"]),
+        ]
+
     rows: list[tuple[str, str]] = []
     for label, cmd in probes:
         try:
@@ -301,7 +371,9 @@ def get_disk_free_report() -> str:
             val = "-"
         if val and val != "-":
             rows.append((label, val))
+
     if not rows:
         return "(no reclaimable areas found)"
+
     w = max(len(a) for a, _ in rows)
     return "\n".join(f"  {a:<{w}}  {b}" for a, b in rows)
