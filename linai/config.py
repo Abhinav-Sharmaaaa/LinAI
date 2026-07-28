@@ -56,7 +56,7 @@ REDRAW_INTERVAL_MS = 40
 
 # Default model - using a reliable free model from OpenRouter
 DEFAULT_CONFIG: dict[str, Any] = {
-    "model": os.environ.get("LINAI_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
+    "model": os.environ.get("LINAI_MODEL", "google/gemma-4-26b-a4b-it:free"),
     "temperature": 0.2,
     "max_tokens": 1000,
 }
