@@ -1,4 +1,4 @@
-"""OpenRouter API calls — streaming and non-streaming, deduplicated."""
+"""API calls — streaming and non-streaming, supports OpenRouter and NVIDIA NIM."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from linai.config import API_URL, STREAM_READ_SIZE
+from linai.config import API_URL, API_KEY, STREAM_READ_SIZE
 from linai.tools import TOOL_DISPATCH, TOOL_SPECS
 
 SYSTEM_MSG = (
@@ -29,13 +29,16 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 def _get_headers() -> dict:
     """Get fresh headers with current API key."""
-    from linai.config import _get_openrouter_key
-    return {
-        "Authorization": f"Bearer {_get_openrouter_key()}",
+    from linai.config import API_KEY
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/linai",
-        "X-Title": "linai",
     }
+    # OpenRouter-specific headers
+    if "openrouter.ai" in API_URL:
+        headers["HTTP-Referer"] = "https://github.com/linai"
+        headers["X-Title"] = "linai"
+    return headers
 
 
 def _build_body(
@@ -65,7 +68,7 @@ def call_streaming(
     on_tool_call: dict | None = None,
     spinner_cb: int | None = None,
 ) -> tuple[str, list[dict]]:
-    """Stream an OpenRouter response.
+    """Stream an API response (OpenRouter or NVIDIA NIM).
 
     Calls on_text(chunk) for each text delta, on_tool_call(index, frag) for tool fragments.
     spinner_cb is a callable that returns the current spinner index.
@@ -144,7 +147,7 @@ def call_nonstreaming(
     temperature: float = 0.2,
     max_tokens: int = 400,
 ) -> tuple[str, list[dict]]:
-    """Non-streaming OpenRouter call. Returns (reply_text, tool_calls_list)."""
+    """Non-streaming API call. Returns (reply_text, tool_calls_list)."""
     body = _build_body(messages, model, False, temperature, max_tokens)
     req = urllib.request.Request(API_URL, data=body, headers=_get_headers(), method="POST")
 
