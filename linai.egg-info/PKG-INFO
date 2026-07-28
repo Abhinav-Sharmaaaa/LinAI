@@ -45,7 +45,7 @@ A lightweight, cross-platform AI assistant for your terminal with TUI, workflows
 - **File Operations** — Read, write, edit, search files in your home directory
 - **Shell Commands** — Run commands safely with sandboxing
 - **Cross-Platform** — Works on Linux, macOS, and Windows
-- **OpenRouter Integration** — Access 100+ models including free ones
+- **Dual API Support** — OpenRouter **and** NVIDIA NIM API
 
 ## Installation
 
@@ -60,6 +60,8 @@ pip install -e .
 ```
 
 ## Quick Start
+
+### OpenRouter (Default)
 
 ```bash
 # Set your OpenRouter API key
@@ -79,6 +81,22 @@ linai --status
 
 # Help
 linai --help
+```
+
+### NVIDIA NIM API
+
+```bash
+# Set NVIDIA API key (get from https://build.nvidia.com)
+export NVIDIA_API_KEY="nvapi-..."
+export LINAI_API_PROVIDER="nvidia_nim"
+
+# Optional: custom NIM endpoint (default: https://integrate.api.nvidia.com/v1)
+export NVIDIA_NIM_API_URL="https://your-nim-endpoint/v1"
+
+# Optional: model override
+export LINAI_NVIDIA_NIM_MODEL="nvidia/nemotron-3-ultra"
+
+linai
 ```
 
 ## Usage
@@ -152,22 +170,42 @@ Config file: `~/.config/linai/config.json`
 
 ```json
 {
-  "model": "meta-llama/llama-3.1-8b-instruct:free",
+  "model": "google/gemma-4-26b-a4b-it:free",
   "temperature": 0.2,
   "max_tokens": 1000
 }
 ```
 
-Environment variables:
-- `OPENROUTER_API_KEY` — Required
-- `LINAI_MODEL` — Default model override
-- `NO_COLOR` — Disable colors
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `OPENROUTER_API_KEY` | OpenRouter API key (required for OpenRouter) |
+| `NVIDIA_API_KEY` / `NVIDIA_NIM_API_KEY` | NVIDIA NIM API key (required for NIM) |
+| `LINAI_API_PROVIDER` | `openrouter` (default) or `nvidia_nim` |
+| `LINAI_MODEL` | Default model override |
+| `LINAI_OPENROUTER_MODEL` | OpenRouter default model |
+| `LINAI_NVIDIA_NIM_MODEL` | NVIDIA NIM default model |
+| `NVIDIA_NIM_API_URL` / `NVIDIA_API_URL` | Custom NIM endpoint |
+| `NO_COLOR` | Disable colors |
+
+### Switching Providers
+
+```bash
+# Use OpenRouter (default)
+export LINAI_API_PROVIDER="openrouter"
+export OPENROUTER_API_KEY="sk-or-v1-..."
+
+# Use NVIDIA NIM
+export LINAI_API_PROVIDER="nvidia_nim"
+export NVIDIA_API_KEY="nvapi-..."
+```
 
 ## Architecture
 
 ```
 linai/
-├── agent.py      # OpenRouter API (streaming + non-streaming)
+├── agent.py      # API calls (streaming + non-streaming, dual provider)
 ├── cli.py        # CLI entry point, one-shot + TUI routing
 ├── config.py     # Config, constants, API key management
 ├── tools.py      # Tool definitions + implementations
@@ -187,6 +225,18 @@ linai/
 | `nousresearch/hermes-3-llama-3.1-8b:free` | 128k | Reasoning |
 
 Set default: `export LINAI_MODEL="meta-llama/llama-3.1-8b-instruct:free"`
+
+## NVIDIA NIM Models
+
+Popular NIM models (require NVIDIA API key):
+
+- `nvidia/nemotron-3-ultra` — Best reasoning
+- `nvidia/nemotron-3-super` — Strong performance
+- `nvidia/nemotron-3-nano` — Fast, efficient
+- `meta/llama-3.1-8b-instruct` — Meta's model on NIM
+- `google/gemma-2-9b` — Google's model on NIM
+
+See [NVIDIA NGC Catalog](https://build.nvidia.com) for full list.
 
 ## Windows Support
 
