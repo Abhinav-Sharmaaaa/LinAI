@@ -6,10 +6,12 @@ import json
 import os
 import subprocess
 import sys
+import time
 import threading
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
+from string import Template
 from urllib.parse import parse_qs, urlparse
 
 try:
@@ -34,7 +36,7 @@ except ImportError:
 
 WEB_DIR = Path(__file__).parent / "web"
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = Template("""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -94,7 +96,7 @@ HTML_TEMPLATE = """
                 <h2>OpenRouter Configuration</h2>
                 <div class="field">
                     <label>API Key</label>
-                    <input type="password" id="openrouter-key" placeholder="sk-or-v1-..." value="{openrouter_key}">
+                    <input type="password" id="openrouter-key" placeholder="sk-or-v1-..." value="$openrouter_key">
                 </div>
             </div>
             <div class="card">
@@ -102,16 +104,16 @@ HTML_TEMPLATE = """
                 <div class="field-row">
                     <div class="field">
                         <label>Model</label>
-                        <input type="text" id="model" value="{model}">
+                        <input type="text" id="model" value="$model">
                     </div>
                     <div class="field">
                         <label>Temperature</label>
-                        <input type="number" step="0.1" min="0" max="2" id="temperature" value="{temperature}">
+                        <input type="number" step="0.1" min="0" max="2" id="temperature" value="$temperature">
                     </div>
                 </div>
                 <div class="field">
                     <label>Max Tokens</label>
-                    <input type="number" id="max_tokens" value="{max_tokens}">
+                    <input type="number" id="max_tokens" value="$max_tokens">
                 </div>
             </div>
         </div>
@@ -121,11 +123,11 @@ HTML_TEMPLATE = """
                 <h2>NVIDIA NIM Configuration</h2>
                 <div class="field">
                     <label>NVIDIA API Key</label>
-                    <input type="password" id="nvidia-key" placeholder="nvapi-..." value="{nvidia_key}">
+                    <input type="password" id="nvidia-key" placeholder="nvapi-..." value="$nvidia_key">
                 </div>
                 <div class="field">
                     <label>NIM API Base URL</label>
-                    <input type="text" id="nvidia-url" placeholder="https://integrate.api.nvidia.com/v1" value="{nvidia_url}">
+                    <input type="text" id="nvidia-url" placeholder="https://integrate.api.nvidia.com/v1" value="$nvidia_url">
                 </div>
             </div>
             <div class="card">
@@ -133,7 +135,7 @@ HTML_TEMPLATE = """
                 <div class="field-row">
                     <div class="field">
                         <label>Model</label>
-                        <input type="text" id="nvidia-model" value="{nvidia_model}">
+                        <input type="text" id="nvidia-model" value="$nvidia_model">
                     </div>
                 </div>
             </div>
@@ -183,7 +185,7 @@ HTML_TEMPLATE = """
         function updateProviderUI(provider) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector(`.tab[data-tab="${provider}"]`).classList.add('active');
+            document.querySelector('.tab[data-tab="' + provider + '"]').classList.add('active');
             document.getElementById(provider + '-tab').classList.add('active');
         }
 
@@ -252,7 +254,7 @@ HTML_TEMPLATE = """
                 const data = await res.json();
                 const logsEl = document.getElementById('logs');
                 logsEl.innerHTML = data.logs.map(l =>
-                    `<div class="log-line ${l.level}">[${l.time}] ${l.message}</div>`
+                    '<div class="log-line ' + l.level + '">[' + l.time + '] ' + l.message + '</div>'
                 ).join('');
                 logsEl.scrollTop = logsEl.scrollHeight;
             } catch (e) {
@@ -277,7 +279,10 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
-"""
+""")
+
+WEB_DIR = Path(__file__).parent / "web"
+
 
 class WebUIHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -306,172 +311,233 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         body = self.rfile.read(content_length).decode('utf-8')
         data = json.loads(body) if body else {}
 
-        if self.path == '/api/config':
+        if path == '/api/config':
             self.save_config(data)
-        elif self.path == '/api/test':
+        elif path == '/api/test':
             self.test_connection(data)
         else:
             self.send_error(404)
 
     def send_html(self):
-        # Load current config values
-        config = self.load_saved_config()
+        try:
+            from linai.config import (
+                API_PROVIDER, OPENROUTER_KEY, NVIDIA_NIM_KEY, NVIDIA_NIM_BASE_URL,
+                DEFAULT_CONFIG
+            )
+        except ImportError:
+            API_PROVIDER = os.environ.get("LINAI_API_PROVIDER", "openrouter")
+            OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
+            NVIDIA_NIM_KEY = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_NIM_API_KEY")
+            NVIDIA_NIM_BASE_URL = os.environ.get("NVIDIA_NIM_API_URL") or os.environ.get("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
+            DEFAULT_CONFIG = {"model": "", "temperature": 0.2, "max_tokens": 1000}
 
-        html = HTML_TEMPLATE.format(
-            openrouter_key=config.get('openrouter_key', ''),
-            nvidia_key=config.get('nvidia_key', ''),
-            nvidia_url=config.get('nvidia_url', 'https://integrate.api.nvidia.com/v1'),
-            model=config.get('model', 'google/gemma-4-26b-a4b-it:free'),
-            nvidia_model=config.get('nvidia_model', 'nvidia/nemotron-3-ultra'),
-            temperature=config.get('temperature', 0.2),
-            max_tokens=config.get('max_tokens', 1000),
-        )
+        config = self.get_config()
+
+        # Determine current provider
+        try:
+            from linai.config import API_PROVIDER
+            provider = API_PROVIDER
+        except ImportError:
+            provider = os.environ.get("LINAI_API_PROVIDER", "openrouter")
+
+        # Prepare template variables
+        template_vars = {
+            'openrouter_key': config.get('openrouter_key', '') or OPENROUTER_KEY or '',
+            'nvidia_key': config.get('nvidia_key', '') or NVIDIA_NIM_KEY or '',
+            'nvidia_url': config.get('nvidia_url', '') or NVIDIA_NIM_BASE_URL or 'https://integrate.api.nvidia.com/v1',
+            'model': config.get('model', '') or DEFAULT_CONFIG.get('model', ''),
+            'nvidia_model': config.get('nvidia_model', '') or DEFAULT_CONFIG.get('model', ''),
+            'temperature': config.get('temperature', DEFAULT_CONFIG.get('temperature', 0.2)),
+            'max_tokens': config.get('max_tokens', DEFAULT_CONFIG.get('max_tokens', 1000)),
+        }
+
+        # Use Template.substitute which uses $variable syntax
+        html = HTML_TEMPLATE.substitute(template_vars)
 
         self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
+        self.send_header("Content-Type", "text/html")
         self.end_headers()
-        self.wfile.write(html.encode())
+        self.wfile.write(html.encode('utf-8'))
 
-    def load_saved_config(self):
+    def get_config(self):
         config = {}
         if CONFIG_FILE.exists():
             try:
                 with open(CONFIG_FILE) as f:
                     config = json.load(f)
-            except:
+            except Exception:
                 pass
         return config
 
     def send_config(self):
-        config = self.load_saved_config()
-        config['provider'] = os.environ.get('LINAI_API_PROVIDER', 'openrouter')
-        self.send_json(config)
+        config = self.get_config()
+        # Don't send actual keys in GET response for security
+        safe_config = {k: v for k, v in config.items() if 'key' not in k.lower()}
+        safe_config['provider'] = self.get_provider()
+        self.send_json(safe_config)
 
-    def save_config(self, data):
-        # Update environment for current session
-        if data.get('provider'):
-            os.environ['LINAI_API_PROVIDER'] = data['provider']
-        if data.get('openrouter_key'):
-            os.environ['OPENROUTER_API_KEY'] = data['openrouter_key']
-        if data.get('nvidia_key'):
-            os.environ['NVIDIA_API_KEY'] = data['nvidia_key']
-        if data.get('nvidia_url'):
-            os.environ['NVIDIA_NIM_API_URL'] = data['nvidia_url']
-        if data.get('model'):
-            os.environ['LINAI_MODEL'] = data['model']
-        if data.get('nvidia_model'):
-            os.environ['LINAI_NVIDIA_NIM_MODEL'] = data['nvidia_model']
-        if data.get('temperature'):
-            os.environ['LINAI_TEMPERATURE'] = str(data['temperature'])
-        if data.get('max_tokens'):
-            os.environ['LINAI_MAX_TOKENS'] = str(data['max_tokens'])
-
-        # Save to config file
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        saved = {}
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE) as f:
-                    saved = json.load(f)
-            except:
-                pass
-
-        saved.update({
-            'provider': data.get('provider', 'openrouter'),
-            'model': data.get('model'),
-            'nvidia_model': data.get('nvidia_model'),
-            'temperature': data.get('temperature'),
-            'max_tokens': data.get('max_tokens'),
-        })
-
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(saved, f, indent=2)
-
-        self.send_json({'success': True, 'message': 'Configuration saved. Restart linai to apply changes.'})
-
-    def test_connection(self, data):
-        provider = data.get('provider', 'openrouter')
+    def get_provider(self):
         try:
-            if provider == 'nvidia_nim':
-                # Test NVIDIA NIM
-                import urllib.request
-                key = os.environ.get('NVIDIA_API_KEY') or os.environ.get('NVIDIA_NIM_API_KEY')
-                url = os.environ.get('NVIDIA_NIM_API_URL', 'https://integrate.api.nvidia.com/v1')
-                if not key:
-                    self.send_json({'success': False, 'message': 'NVIDIA_API_KEY not set'})
-                    return
-                req = urllib.request.Request(
-                    f"{url}/models",
-                    headers={'Authorization': f'Bearer {key}'}
-                )
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    data = json.load(r)
-                    self.send_json({'success': True, 'message': f'NVIDIA NIM connected. {len(data.get("data", []))} models available.'})
-            else:
-                # Test OpenRouter
-                import urllib.request
-                key = os.environ.get('OPENROUTER_API_KEY')
-                if not key:
-                    self.send_json({'success': False, 'message': 'OPENROUTER_API_KEY not set'})
-                    return
-                req = urllib.request.Request(
-                    'https://openrouter.ai/api/v1/models',
-                    headers={'Authorization': f'Bearer {key}'}
-                )
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    data = json.load(r)
-                    self.send_json({'success': True, 'message': f'OpenRouter connected. {len(data.get("data", []))} models available.'})
-        except Exception as e:
-            self.send_json({'success': False, 'message': f'Connection failed: {str(e)}'})
+            from linai.config import API_PROVIDER
+            return API_PROVIDER
+        except ImportError:
+            return os.environ.get("LINAI_API_PROVIDER", "openrouter")
 
     def send_logs(self):
+        log_file = Path.home() / ".local" / "share" / "linai" / "logs" / "linai.log"
+        if not log_file.exists():
+            log_file = CONFIG_DIR / "linai.log"
+        if not log_file.exists():
+            log_file = Path.home() / ".linai.log"
+
         logs = []
-        # Read linai log file if exists
-        log_file = CONFIG_DIR / 'linai.log'
         if log_file.exists():
             try:
                 with open(log_file) as f:
                     for line in f.readlines()[-100:]:
-                        parts = line.strip().split(' ', 2)
-                        if len(parts) >= 3:
-                            logs.append({'time': parts[0], 'level': parts[1], 'message': parts[2]})
-            except:
+                        line = line.strip()
+                        if line:
+                            # Try to parse timestamp and level
+                            level = "info"
+                            if "ERROR" in line.upper():
+                                level = "error"
+                            elif "WARN" in line.upper():
+                                level = "warn"
+                            elif "SUCCESS" in line.upper():
+                                level = "success"
+                            logs.append({"time": "", "level": level, "message": line})
+            except Exception:
                 pass
-        self.send_json({'logs': logs})
+
+        self.send_json({"logs": logs})
 
     def send_status(self):
-        status = {
-            'provider': API_PROVIDER,
-            'has_openrouter_key': bool(OPENROUTER_KEY),
-            'has_nvidia_key': bool(NVIDIA_NIM_KEY),
-            'default_model': DEFAULT_CONFIG.get('model', ''),
-        }
+        try:
+            from linai.utils import get_system_status, get_disk_free_report
+            status = {
+                "system": get_system_status(),
+                "disk": get_disk_free_report(),
+                "provider": self.get_provider(),
+            }
+        except ImportError:
+            status = {"system": "N/A", "disk": "N/A", "provider": self.get_provider()}
         self.send_json(status)
 
     def send_json(self, data):
         self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
+    def save_config(self, data):
+        config = self.get_config()
+        # Update with new values
+        for key in ['provider', 'openrouter_key', 'nvidia_key', 'nvidia_url', 'model', 'nvidia_model', 'temperature', 'max_tokens']:
+            if key in data:
+                config[key] = data[key]
 
-def run_server(port=8765):
-    server = HTTPServer(('127.0.0.1', port), WebUIHandler)
-    print(f"linai Web UI running at http://127.0.0.1:{port}")
-    webbrowser.open(f'http://127.0.0.1:{port}')
-    server.serve_forever()
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        self.send_json({"success": True, "message": "Configuration saved"})
+
+    def test_connection(self, data):
+        provider = data.get('provider', 'openrouter')
+
+        try:
+            from linai.config import API_KEY, API_URL
+        except ImportError:
+            API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("NVIDIA_API_KEY")
+            API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+        if provider == "nvidia_nim":
+            url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            api_key = NVIDIA_NIM_KEY
+        else:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            api_key = OPENROUTER_KEY
+
+        if not api_key:
+            self.send_json({"success": False, "error": "No API key configured"})
+            return
+
+        model = "google/gemma-4-26b-a4b-it:free"  # default test model
+
+        body = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 10,
+        }).encode()
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        if provider == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/linai"
+            headers["X-Title"] = "linai"
+
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.load(r)
+            content = data["choices"][0]["message"]["content"]
+            self.send_json({"success": True, "message": f"Connection successful! Response: {content[:50]}"})
+        except urllib.error.HTTPError as e:
+            self.send_json({"success": False, "error": f"HTTP {e.code}: {e.reason}"})
+        except Exception as e:
+            self.send_json({"success": False, "error": str(e)})
+
+
+class WebServer:
+    """Web UI Server for linai."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+        self.host = host
+        self.port = port
+        self.server = HTTPServer((host, port), WebUIHandler)
+        self.thread: threading.Thread | None = None
+
+    def start(self, open_browser: bool = True):
+        """Start the web server."""
+        print(f"Starting linai Web UI at http://{self.host}:{self.port}")
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+        if open_browser:
+            time.sleep(1)
+            webbrowser.open(f"http://{self.host}:{self.port}")
+
+        return self
+
+    def stop(self):
+        """Stop the web server."""
+        self.server.shutdown()
+        if self.thread:
+            self.thread.join(timeout=2)
 
 
 def main():
+    """Main entry point for web UI."""
+    import sys
     port = 8765
     if len(sys.argv) > 1:
         try:
             port = int(sys.argv[1])
-        except:
+        except ValueError:
             pass
-    run_server(port)
+
+    server = WebServer(port=port)
+    try:
+        server.start()
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        server.stop()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -8,6 +8,7 @@ linai/cli.py
 linai/config.py
 linai/tools.py
 linai/utils.py
+linai/webui.py
 linai.egg-info/PKG-INFO
 linai.egg-info/SOURCES.txt
 linai.egg-info/dependency_links.txt
@@ -17,3 +18,5 @@ linai.egg-info/top_level.txt
 linai/tui/__init__.py
 linai/tui/app.py
 linai/tui/keys.py
+linai/web/__init__.py
+linai/web/server.py

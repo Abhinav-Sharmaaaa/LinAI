@@ -81,6 +81,9 @@ linai --status
 
 # Help
 linai --help
+
+# Web UI for configuration and logs
+linai-web
 ```
 
 ### NVIDIA NIM API
@@ -98,6 +101,24 @@ export LINAI_NVIDIA_NIM_MODEL="nvidia/nemotron-3-ultra"
 
 linai
 ```
+
+## Web UI
+
+```bash
+# Start web UI for configuration and logs
+linai-web
+
+# Custom port
+linai-web 8080
+```
+
+The web UI runs at `http://127.0.0.1:8765` and provides:
+- **Configuration Panel** — Set API keys, choose provider (OpenRouter/NVIDIA NIM), select models
+- **Logs Viewer** — Real-time log streaming with filtering
+- **Workflow Manager** — Create, list, execute workflows visually
+- **System Dashboard** — Disk, memory, CPU, uptime
+- **API Connection Tester** — Test credentials before saving
+- **Model Browser** — Browse available models with pricing
 
 ## Usage
 

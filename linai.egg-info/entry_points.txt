@@ -1,2 +1,3 @@
 [console_scripts]
 linai = linai.cli:main
+linai-web = linai.webui:main
