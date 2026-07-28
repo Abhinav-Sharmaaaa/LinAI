@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 linai = "linai.cli:main"
+linai-web = "linai.webui:main"
 
 [project.urls]
 Homepage = "https://github.com/Abhinav-Sharmaaaa/LinAI"
