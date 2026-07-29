@@ -131,6 +131,38 @@ def wrap_ansi(text: str, width: int) -> list[str]:
             space_vis = 1 if (cur_vis > 0 and wi > 0) else 0
             needed = word_vis + space_vis
 
+            if word_vis > width:
+                # A single token (e.g. a long URL) is wider than the whole
+                # terminal — normal word-wrap can't break it, so hard-break
+                # it into width-sized pieces. Without this, the line would
+                # come out longer than the terminal and get silently
+                # truncated at render time instead of wrapping.
+                if cur_vis > 0:
+                    lines.append(cur_line)
+                    cur_line = carry_ansi
+                    cur_vis = 0
+                plain_word = _RE_ANSI.sub("", word)
+                idx = 0
+                first_piece = True
+                while idx < len(plain_word):
+                    piece = plain_word[idx:idx + width]
+                    idx += width
+                    prefix = word_ansi_prefix if first_piece else ""
+                    first_piece = False
+                    if idx < len(plain_word):
+                        lines.append(prefix + piece)
+                    else:
+                        cur_line = prefix + piece
+                        cur_vis = len(piece)
+
+                trailing_ansi = ""
+                for m in _RE_ANSI.finditer(word):
+                    if m.end() == len(word):
+                        trailing_ansi += m.group()
+                if trailing_ansi:
+                    carry_ansi = trailing_ansi
+                continue
+
             if cur_vis + needed > width and cur_vis > 0:
                 # Wrap
                 lines.append(cur_line)

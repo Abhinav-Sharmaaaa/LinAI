@@ -670,6 +670,15 @@ class TUI:
             sp = 0
             spinner_active = True
 
+            # _quick_draw_chunk renders each raw network chunk independently
+            # for a live "typing" effect, but a chunk can split mid-word or
+            # mid-markdown-token — rendering it in isolation produces
+            # garbled/cut-off lines. Remember where this turn's provisional
+            # lines start so we can discard them once we have the complete
+            # text and re-render it correctly in one pass.
+            stream_line_start = len(self.output_lines)
+            stream_all_start = len(self.all_output)
+
             def on_text(chunk: str) -> None:
                 nonlocal sp
                 reply_chunks.append(chunk)
@@ -713,8 +722,18 @@ class TUI:
             sys.stdout.write(f"\r\033[500C\033[K")
             sys.stdout.flush()
 
+            # Discard the provisional per-chunk lines drawn live during
+            # streaming and re-render the complete text in one pass — this
+            # is what actually fixes broken word-wrap/markdown, since
+            # _render_markdown needs the whole line/block to format it
+            # correctly, not an arbitrary network-chunk-sized slice of it.
+            del self.output_lines[stream_line_start:]
+            del self.all_output[stream_all_start:]
+            if reply_text:
+                self.draw_text(reply_text)
+
             # Ensure trailing newline before tools
-            if reply_chunks and not "".join(reply_chunks).endswith("\n"):
+            if reply_text and not reply_text.endswith("\n"):
                 self.draw_text("")
 
             # Build assistant message

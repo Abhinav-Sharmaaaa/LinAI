@@ -382,22 +382,66 @@ def _parse_ddg_lite_results(html_content: str, max_results: int) -> list[dict]:
     return results
 
 
-def tool_web_search(query: str, max_results: int = 5) -> str:
-    """Search the web via DuckDuckGo. No API key needed.
+def _brave_search(query: str, max_results: int, api_key: str) -> list[dict]:
+    """Query the Brave Search API — a real ranked/indexed search engine
+    (unlike the DDG scrape below, which just parses whatever HTML DDG
+    happens to render for a non-browser client). Raises on failure so the
+    caller can fall back to DDG."""
+    url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode({
+        "q": query,
+        "count": max_results,
+    })
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "X-Subscription-Token": api_key,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = _json.loads(r.read().decode("utf-8", errors="replace"))
+    results = []
+    for item in (data.get("web", {}) or {}).get("results", [])[:max_results]:
+        results.append({
+            "title": _clean_text(item.get("title", "")),
+            "url": item.get("url", ""),
+            "snippet": _clean_text(item.get("description", ""))[:400],
+        })
+    return results
 
-    Tries the full HTML endpoint first (richer snippets); if that returns
-    nothing (DDG occasionally serves an interstitial instead of results to
-    non-browser clients) falls back to the lite endpoint.
+
+def tool_web_search(query: str, max_results: int = 8) -> str:
+    """Search the web. Uses Brave Search (a real ranked search API) if a
+    brave_api_key is configured — https://brave.com/search/api/, free tier
+    available — otherwise falls back to scraping DuckDuckGo's HTML (no key
+    needed, but a raw scrape has no real ranking/relevance model behind it).
+
+    For anything requiring precise facts, numbers, or quotes, follow up
+    with web_fetch on the most relevant result(s) — snippets are often too
+    thin or stale to answer from directly.
     """
     max_results = max(1, min(max_results, 10))
     errors: list[str] = []
     results: list[dict] = []
 
     try:
-        html_content = _fetch_ddg_html(query, use_lite=False)
-        results = _parse_ddg_results(html_content, max_results)
-    except Exception as e:
-        errors.append(f"html endpoint: {e}")
+        from linai.config import load_config
+        brave_key = load_config().get("brave_api_key")
+    except Exception:
+        brave_key = None
+
+    if brave_key:
+        try:
+            results = _brave_search(query, max_results, brave_key)
+        except Exception as e:
+            errors.append(f"brave: {e}")
+
+    if not results:
+        try:
+            html_content = _fetch_ddg_html(query, use_lite=False)
+            results = _parse_ddg_results(html_content, max_results)
+        except Exception as e:
+            errors.append(f"html endpoint: {e}")
 
     if not results:
         try:
@@ -417,6 +461,57 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
             entry += f"\n   {r['snippet']}"
         out.append(entry)
     return "\n\n".join(out)
+
+
+def tool_web_fetch(url: str, max_chars: int = 6000) -> str:
+    """Fetch a URL and return its readable text content (HTML stripped of
+    scripts/styles/tags). Use this after web_search when a snippet isn't
+    enough to answer accurately — e.g. you need a specific number, quote,
+    date, or detail that only shows up in the full page."""
+    if not url.startswith(("http://", "https://")):
+        return f"(refused: not an http(s) url: {url})"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            content_type = r.headers.get("Content-Type", "")
+            raw = r.read(2_000_000)  # cap read size regardless of Content-Length
+    except Exception as e:
+        return f"(fetch failed: {e})"
+
+    if "text/html" not in content_type and "application/xhtml" not in content_type:
+        # Not HTML (PDF, image, JSON, etc.) — return a short notice rather
+        # than dumping binary/garbled content.
+        return f"(not HTML — content-type: {content_type or 'unknown'}; can't extract readable text)"
+
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        text = raw.decode(errors="replace")
+
+    # Strip script/style blocks entirely (their contents aren't readable text)
+    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", text)
+    # Turn common block-level tags into line breaks before stripping tags,
+    # so paragraphs/headings/list items don't run together into one blob.
+    text = re.sub(r"(?i)</(p|div|h[1-6]|li|tr|br|section|article)\s*>", "\n", text)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = _clean_text(text)
+    # Collapse excess blank lines/whitespace left over from stripped tags
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = text.strip()
+
+    if not text:
+        return f"(no readable text extracted from {url})"
+
+    truncated = len(text) > max_chars
+    text = text[:max_chars]
+    suffix = f"\n…(truncated, {len(text)}+ chars)" if truncated else ""
+    return f"# {url}\n{text}{suffix}"
 
 
 # ── Workflow system ──────────────────────────────────────────────────────────
@@ -650,14 +745,29 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web via DuckDuckGo. Use whenever you need current info, docs, prices, news, etc. No API key needed.",
+            "description": "Search the web (Brave Search if configured — a real ranked API — otherwise DuckDuckGo, no key needed). Returns title/url/snippet per result. Follow up with web_fetch on the most relevant result(s) when a snippet isn't enough to answer precisely.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "max_results": {"type": "integer", "default": 5, "description": "Max results to return"},
+                    "max_results": {"type": "integer", "default": 8, "description": "Max results to return. Prefer 8-10 for broad/informational queries so you have enough to filter out irrelevant hits yourself."},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch a URL (from a web_search result, or one the user gave you) and return its readable text content. Use this when a search snippet is too thin to answer accurately — e.g. you need a specific number, date, quote, or detail that only appears in the full page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full http(s) URL to fetch"},
+                    "max_chars": {"type": "integer", "default": 6000, "description": "Max characters of extracted text to return"},
+                },
+                "required": ["url"],
             },
         },
     },
@@ -726,6 +836,7 @@ TOOL_DISPATCH: dict[str, Any] = {
     "free_up_space":    tool_free_up_space,
     "clean_cache":      lambda a: tool_clean_cache(**a),
     "web_search":       lambda a: tool_web_search(**a),
+    "web_fetch":        lambda a: tool_web_fetch(**a),
     "create_workflow":  lambda a: tool_create_workflow(**a),
     "execute_workflow": lambda a: tool_execute_workflow(**a),
     "list_workflows":   lambda a: tool_list_workflows(),
