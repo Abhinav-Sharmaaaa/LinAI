@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from linai.config import (
-    API_MODELS_URL,
     CONFIG_DIR,
     HOME,
     MAX_TOOL_OUTPUT,
     MODEL_CACHE,
     MODEL_CACHE_TTL,
-    OPENROUTER_KEY,
+    get_runtime,
 )
 
 # ── Color support ────────────────────────────────────────────────────────
@@ -161,11 +160,13 @@ def wrap_ansi(text: str, width: int) -> list[str]:
 # ── Model cache ───────────────────────────────────────────────────────────
 
 def fetch_models() -> list[dict]:
-    """Fetch and cache model list from OpenRouter. Returns trimmed model dicts."""
+    """Fetch and cache the model list for whichever provider is currently
+    active in config.json. Returns trimmed model dicts."""
+    runtime = get_runtime()
     try:
         req = urllib.request.Request(
-            API_MODELS_URL,
-            headers={"Authorization": f"Bearer {OPENROUTER_KEY}"},
+            runtime["models_url"],
+            headers={"Authorization": f"Bearer {runtime['api_key']}"},
         )
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
@@ -179,7 +180,7 @@ def fetch_models() -> list[dict]:
                 "context_length": m.get("context_length", 0),
                 "architecture": {"modality": m.get("architecture", {}).get("modality", "")},
             })
-        cache = {"fetched_at": time.time(), "data": trimmed}
+        cache = {"fetched_at": time.time(), "provider": runtime["provider"], "data": trimmed}
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(MODEL_CACHE, "w") as f:
             json.dump(cache, f)
@@ -187,11 +188,14 @@ def fetch_models() -> list[dict]:
     except Exception:
         pass
 
-    # Fallback to cache
+    # Fallback to cache — but only if it was cached for the same provider,
+    # otherwise you'd silently get e.g. OpenRouter model ids while on NVIDIA.
     if MODEL_CACHE.exists():
         try:
             with open(MODEL_CACHE) as f:
                 cached = json.load(f)
+            if cached.get("provider") != runtime["provider"]:
+                return []
             # Check TTL
             fetched_at = cached.get("fetched_at", 0)
             if time.time() - fetched_at < MODEL_CACHE_TTL:

@@ -21,6 +21,9 @@ from linai.config import (
     MAX_OUTPUT_LINES,
     MAX_TURNS,
     REDRAW_INTERVAL_MS,
+    get_runtime,
+    load_config,
+    save_config,
 )
 from linai.tui.keys import getch
 from linai.utils import C, cap, fetch_models, format_price, get_system_status, init_colors, strip_ansi, vislen, wrap_ansi
@@ -48,7 +51,7 @@ class TUI:
         self.history = hist[-50:] if hist else []
         self.hist_idx: int = -1
         self.scrollback: int = 0
-        self._model = model or DEFAULT_CONFIG["model"]
+        self._model = model or get_runtime()["model"]
         self._temperature = temperature if temperature is not None else DEFAULT_CONFIG["temperature"]
         self._max_tokens = max_tokens if max_tokens is not None else DEFAULT_CONFIG["max_tokens"]
         self.messages: list[dict] = self._load_history()
@@ -490,7 +493,9 @@ class TUI:
 
         all_models = fetch_models()
         if not all_models:
-            sys.stdout.write(f"\033[33m  (fetch failed; check OPENROUTER_API_KEY)\033[0m\n")
+            provider = get_runtime()["provider"]
+            hint = "NVIDIA_API_KEY" if provider == "nvidia_nim" else "OPENROUTER_API_KEY"
+            sys.stdout.write(f"\033[33m  (fetch failed for {provider}; check {hint})\033[0m\n")
             try:
                 input("\nPress Enter to return...")
             except (EOFError, KeyboardInterrupt):
@@ -555,16 +560,9 @@ class TUI:
     @staticmethod
     def _save_model(model_id: str) -> None:
         try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            # Only keep valid config keys
-            valid_keys = {"model", "temperature", "max_tokens"}
-            if CONFIG_FILE.exists():
-                cfg = json.loads(CONFIG_FILE.read_text())
-                cfg = {k: v for k, v in cfg.items() if k in valid_keys}
-            else:
-                cfg = {}
-            cfg["model"] = model_id
-            CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+            cfg = load_config()
+            key = "nvidia_model" if cfg.get("provider") in ("nvidia", "nvidia_nim") else "model"
+            save_config({key: model_id})
         except Exception:
             pass
 
