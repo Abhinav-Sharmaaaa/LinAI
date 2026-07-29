@@ -16,23 +16,57 @@ from urllib.parse import parse_qs, urlparse
 
 try:
     from linai.config import (
-        API_PROVIDER,
-        API_KEY,
         DEFAULT_CONFIG,
         CONFIG_FILE,
         CONFIG_DIR,
-        NVIDIA_NIM_KEY,
-        OPENROUTER_KEY,
+        load_config,
+        save_config as config_save,
+        get_runtime,
+        normalize_provider,
     )
 except ImportError:
     # Fallback if not installed
-    API_PROVIDER = os.environ.get("LINAI_API_PROVIDER", "openrouter")
-    API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("NVIDIA_API_KEY")
     DEFAULT_CONFIG = {"model": "", "temperature": 0.2, "max_tokens": 1000}
     CONFIG_FILE = Path.home() / ".config" / "linai" / "config.json"
     CONFIG_DIR = CONFIG_FILE.parent
-    NVIDIA_NIM_KEY = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_NIM_API_KEY")
-    OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
+
+    def normalize_provider(p):
+        return "nvidia_nim" if p in ("nvidia", "nvidia_nim") else "openrouter"
+
+    def load_config():
+        cfg = dict(DEFAULT_CONFIG)
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE) as f:
+                    cfg.update(json.load(f))
+            except Exception:
+                pass
+        return cfg
+
+    def config_save(updates):
+        cfg = load_config()
+        cfg.update(updates)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cfg, f, indent=2)
+        return cfg
+
+    def get_runtime(cfg=None):
+        cfg = cfg or load_config()
+        provider = normalize_provider(cfg.get("provider"))
+        if provider == "nvidia_nim":
+            return {
+                "provider": provider,
+                "api_key": cfg.get("nvidia_key") or os.environ.get("NVIDIA_API_KEY"),
+                "api_url": (cfg.get("nvidia_url") or "https://integrate.api.nvidia.com/v1").rstrip("/") + "/chat/completions",
+                "model": cfg.get("nvidia_model") or "",
+            }
+        return {
+            "provider": provider,
+            "api_key": cfg.get("openrouter_key") or os.environ.get("OPENROUTER_API_KEY"),
+            "api_url": "https://openrouter.ai/api/v1/chat/completions",
+            "model": cfg.get("model") or "",
+        }
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -169,8 +203,8 @@ HTML_TEMPLATE = Template("""
             try {
                 const res = await fetch('/api/config');
                 const data = await res.json();
-                if (data.openrouter_key) document.getElementById('openrouter-key').value = data.openrouter_key;
-                if (data.nvidia_key) document.getElementById('nvidia-key').value = data.nvidia_key;
+                if (data.openrouter_key_set) document.getElementById('openrouter-key').placeholder = '•••••••• (saved)';
+                if (data.nvidia_key_set) document.getElementById('nvidia-key').placeholder = '•••••••• (saved)';
                 if (data.nvidia_url) document.getElementById('nvidia-url').value = data.nvidia_url;
                 if (data.model) document.getElementById('model').value = data.model;
                 if (data.nvidia_model) document.getElementById('nvidia-model').value = data.nvidia_model;
@@ -183,10 +217,12 @@ HTML_TEMPLATE = Template("""
         }
 
         function updateProviderUI(provider) {
+            // Backend normalizes to 'nvidia_nim'; the tab buttons use 'nvidia'.
+            const tabId = (provider === 'nvidia_nim' || provider === 'nvidia') ? 'nvidia' : 'openrouter';
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector('.tab[data-tab="' + provider + '"]').classList.add('active');
-            document.getElementById(provider + '-tab').classList.add('active');
+            document.querySelector('.tab[data-tab="' + tabId + '"]').classList.add('active');
+            document.getElementById(tabId + '-tab').classList.add('active');
         }
 
         // Save config
@@ -196,16 +232,20 @@ HTML_TEMPLATE = Template("""
             btn.disabled = true;
 
             const provider = document.querySelector('.tab.active').dataset.tab;
+            const orKey = document.getElementById('openrouter-key').value;
+            const nvKey = document.getElementById('nvidia-key').value;
             const config = {
                 provider,
-                openrouter_key: document.getElementById('openrouter-key').value,
-                nvidia_key: document.getElementById('nvidia-key').value,
                 nvidia_url: document.getElementById('nvidia-url').value,
                 model: document.getElementById('model').value,
                 nvidia_model: document.getElementById('nvidia-model').value,
                 temperature: parseFloat(document.getElementById('temperature').value),
                 max_tokens: parseInt(document.getElementById('max_tokens').value),
             };
+            // Only send keys if the user actually typed something — an empty
+            // password field just means "unchanged", not "clear the key".
+            if (orKey) config.openrouter_key = orKey;
+            if (nvKey) config.nvidia_key = nvKey;
 
             try {
                 const res = await fetch('/api/config', {
@@ -229,15 +269,25 @@ HTML_TEMPLATE = Template("""
             btn.disabled = true;
 
             const provider = document.querySelector('.tab.active').dataset.tab;
+            const orKey = document.getElementById('openrouter-key').value;
+            const nvKey = document.getElementById('nvidia-key').value;
+            const testConfig = {
+                provider,
+                nvidia_url: document.getElementById('nvidia-url').value,
+                model: document.getElementById('model').value,
+                nvidia_model: document.getElementById('nvidia-model').value,
+            };
+            if (orKey) testConfig.openrouter_key = orKey;
+            if (nvKey) testConfig.nvidia_key = nvKey;
 
             try {
                 const res = await fetch('/api/test', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider })
+                    body: JSON.stringify(testConfig)
                 });
                 const data = await res.json();
-                showStatus(data.message || (data.success ? 'Connection successful!' : 'Connection failed'), data.success);
+                showStatus(data.message || data.error || (data.success ? 'Connection successful!' : 'Connection failed'), data.success);
             } catch (e) {
                 showStatus('Test failed: ' + e.message, false);
             }
@@ -319,34 +369,16 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def send_html(self):
-        try:
-            from linai.config import (
-                API_PROVIDER, OPENROUTER_KEY, NVIDIA_NIM_KEY, NVIDIA_NIM_BASE_URL,
-                DEFAULT_CONFIG
-            )
-        except ImportError:
-            API_PROVIDER = os.environ.get("LINAI_API_PROVIDER", "openrouter")
-            OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
-            NVIDIA_NIM_KEY = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_NIM_API_KEY")
-            NVIDIA_NIM_BASE_URL = os.environ.get("NVIDIA_NIM_API_URL") or os.environ.get("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
-            DEFAULT_CONFIG = {"model": "", "temperature": 0.2, "max_tokens": 1000}
-
         config = self.get_config()
-
-        # Determine current provider
-        try:
-            from linai.config import API_PROVIDER
-            provider = API_PROVIDER
-        except ImportError:
-            provider = os.environ.get("LINAI_API_PROVIDER", "openrouter")
+        provider = normalize_provider(config.get('provider'))
 
         # Prepare template variables
         template_vars = {
-            'openrouter_key': config.get('openrouter_key', '') or OPENROUTER_KEY or '',
-            'nvidia_key': config.get('nvidia_key', '') or NVIDIA_NIM_KEY or '',
-            'nvidia_url': config.get('nvidia_url', '') or NVIDIA_NIM_BASE_URL or 'https://integrate.api.nvidia.com/v1',
+            'openrouter_key': config.get('openrouter_key', ''),
+            'nvidia_key': config.get('nvidia_key', ''),
+            'nvidia_url': config.get('nvidia_url', '') or 'https://integrate.api.nvidia.com/v1',
             'model': config.get('model', '') or DEFAULT_CONFIG.get('model', ''),
-            'nvidia_model': config.get('nvidia_model', '') or DEFAULT_CONFIG.get('model', ''),
+            'nvidia_model': config.get('nvidia_model', '') or DEFAULT_CONFIG.get('nvidia_model', ''),
             'temperature': config.get('temperature', DEFAULT_CONFIG.get('temperature', 0.2)),
             'max_tokens': config.get('max_tokens', DEFAULT_CONFIG.get('max_tokens', 1000)),
         }
@@ -360,28 +392,20 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         self.wfile.write(html.encode('utf-8'))
 
     def get_config(self):
-        config = {}
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE) as f:
-                    config = json.load(f)
-            except Exception:
-                pass
-        return config
+        return load_config()
 
     def send_config(self):
         config = self.get_config()
-        # Don't send actual keys in GET response for security
+        # Don't send actual keys in GET response for security, but DO send
+        # whether a key is present so the UI can show a placeholder/state.
         safe_config = {k: v for k, v in config.items() if 'key' not in k.lower()}
-        safe_config['provider'] = self.get_provider()
+        safe_config['provider'] = normalize_provider(config.get('provider'))
+        safe_config['openrouter_key_set'] = bool(config.get('openrouter_key'))
+        safe_config['nvidia_key_set'] = bool(config.get('nvidia_key'))
         self.send_json(safe_config)
 
     def get_provider(self):
-        try:
-            from linai.config import API_PROVIDER
-            return API_PROVIDER
-        except ImportError:
-            return os.environ.get("LINAI_API_PROVIDER", "openrouter")
+        return normalize_provider(self.get_config().get('provider'))
 
     def send_logs(self):
         log_file = Path.home() / ".local" / "share" / "linai" / "logs" / "linai.log"
@@ -430,39 +454,28 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
     def save_config(self, data):
-        config = self.get_config()
-        # Update with new values
-        for key in ['provider', 'openrouter_key', 'nvidia_key', 'nvidia_url', 'model', 'nvidia_model', 'temperature', 'max_tokens']:
-            if key in data:
-                config[key] = data[key]
-
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
-
+        config_save(data)
         self.send_json({"success": True, "message": "Configuration saved"})
 
     def test_connection(self, data):
-        provider = data.get('provider', 'openrouter')
+        # Persist whatever was just entered so get_runtime() sees it, then
+        # resolve using the *saved* config rather than re-deriving ad hoc
+        # provider/url/key logic here (that duplication is what caused the
+        # NVIDIA tab to silently test against an OpenRouter model before).
+        cfg = config_save(data) if data else load_config()
+        runtime = get_runtime(cfg)
 
-        try:
-            from linai.config import API_KEY, API_URL
-        except ImportError:
-            API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("NVIDIA_API_KEY")
-            API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-        if provider == "nvidia_nim":
-            url = "https://integrate.api.nvidia.com/v1/chat/completions"
-            api_key = NVIDIA_NIM_KEY
-        else:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            api_key = OPENROUTER_KEY
+        api_key = runtime["api_key"]
+        url = runtime["api_url"]
+        model = runtime["model"]
+        provider = runtime["provider"]
 
         if not api_key:
-            self.send_json({"success": False, "error": "No API key configured"})
+            self.send_json({"success": False, "error": f"No API key configured for {provider}"})
             return
-
-        model = "google/gemma-4-26b-a4b-it:free"  # default test model
+        if not model:
+            self.send_json({"success": False, "error": f"No model configured for {provider}"})
+            return
 
         body = json.dumps({
             "model": model,

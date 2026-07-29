@@ -13,10 +13,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from linai.config import (
-    API_PROVIDER, API_KEY, API_URL, API_MODELS_URL, DEFAULT_CONFIG,
-    OPENROUTER_KEY, NVIDIA_NIM_KEY, NVIDIA_NIM_BASE_URL,
-    CONFIG_DIR, CONFIG_FILE, HISTORY_FILE, HOME,
-    DEFAULT_OPENROUTER_MODEL, DEFAULT_NVIDIA_NIM_MODEL
+    DEFAULT_CONFIG, CONFIG_DIR, CONFIG_FILE, HISTORY_FILE, HOME,
+    get_runtime, load_config, save_config as config_save,
 )
 from linai.utils import get_system_status, get_disk_free_report
 
@@ -113,13 +111,7 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         post_data = self.rfile.read(content_length).decode("utf-8")
         data = json.loads(post_data)
 
-        config = self.get_config()
-        config.update(data)
-
-        # Save to config file
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f, indent=2)
+        config = config_save(data)
 
         self.send_json({"success": True, "config": config})
 
@@ -148,42 +140,28 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         post_data = self.rfile.read(content_length).decode("utf-8")
         data = json.loads(post_data)
 
-        provider = data.get("provider", "openrouter")
-        api_key = data.get("api_key")
-        model = data.get("model")
-
-        result = self.test_api_connection(provider, api_key, model)
+        cfg = config_save(data) if data else load_config()
+        runtime = get_runtime(cfg)
+        result = self.test_api_connection(runtime["provider"], runtime["api_key"], runtime["model"])
         self.send_json(result)
 
     def get_config(self) -> dict[str, Any]:
         """Get current configuration."""
-        config = {}
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE) as f:
-                    config = json.load(f)
-            except Exception:
-                pass
-        # Add defaults for missing keys
-        for k, v in DEFAULT_CONFIG.items():
-            if k not in config:
-                config[k] = v
-        return config
+        return load_config()
 
     def get_provider_info(self) -> dict[str, Any]:
         """Get current provider information."""
-        from linai.config import API_PROVIDER, API_KEY, API_URL, DEFAULT_OPENROUTER_MODEL, DEFAULT_NVIDIA_NIM_MODEL
+        runtime = get_runtime()
         return {
-            "provider": API_PROVIDER,
-            "api_url": API_URL,
-            "key_configured": bool(API_KEY),
-            "default_model": DEFAULT_NVIDIA_NIM_MODEL if API_PROVIDER == "nvidia_nim" else DEFAULT_OPENROUTER_MODEL,
+            "provider": runtime["provider"],
+            "api_url": runtime["api_url"],
+            "key_configured": bool(runtime["api_key"]),
+            "default_model": runtime["model"],
         }
 
     def get_api_key(self) -> str | None:
         """Get the current API key."""
-        from linai.config import API_KEY
-        return API_KEY
+        return get_runtime()["api_key"]
 
     def get_logs(self, lines: int = 100) -> list[str]:
         """Get recent log entries."""
@@ -255,7 +233,8 @@ class WebUIHandler(SimpleHTTPRequestHandler):
 
     def get_models(self) -> list[dict[str, Any]]:
         """Fetch available models from the API."""
-        from linai.config import API_MODELS_URL, API_KEY
+        runtime = get_runtime()
+        API_MODELS_URL, API_KEY = runtime["models_url"], runtime["api_key"]
         try:
             import urllib.request
             req = urllib.request.Request(

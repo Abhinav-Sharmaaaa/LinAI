@@ -8,37 +8,27 @@ from pathlib import Path
 from typing import Any
 
 from linai import __version__
-from linai.agent import SYSTEM_MSG, call_nonstreaming, execute_tool
+from linai.agent import SYSTEM_MSG, call_nonstreaming, execute_tool, looks_uncertain
 from linai.config import (
     CONFIG_DIR,
     CONFIG_FILE,
-    DEFAULT_CONFIG,
     HISTORY_FILE,
     MAX_TURNS,
+    get_runtime,
 )
+from linai.config import load_config as _load_config
+from linai.config import save_config as _save_config
 from linai.utils import cap, init_colors
 
 
 def load_config() -> dict[str, Any]:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE) as f:
-                cfg = json.load(f)
-            # Merge with defaults for new keys
-            for k, v in DEFAULT_CONFIG.items():
-                if k not in cfg:
-                    cfg[k] = v
-            return cfg
-        except (json.JSONDecodeError, IOError):
-            pass
-    return dict(DEFAULT_CONFIG)
+    """Thin wrapper kept for backwards compatibility within this module."""
+    return _load_config()
 
 
 def save_config(cfg: dict[str, Any]) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2)
+    """Thin wrapper kept for backwards compatibility within this module."""
+    _save_config(cfg)
 
 
 def print_status() -> None:
@@ -80,6 +70,7 @@ def one_shot(
 
     spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     sp = 0
+    forced_search_retry_used = False
 
     while True:
         try:
@@ -90,6 +81,22 @@ def one_shot(
         except Exception as e:
             print(f"\033[31merror: {e}\033[0m", file=sys.stderr)
             sys.exit(1)
+
+        # Safety net: if the model answered with hedging/denial ("no such
+        # thing", "could you clarify", etc.) instead of calling web_search,
+        # force exactly one search-required retry rather than accepting an
+        # unverified guess. Weaker models sometimes ignore the system
+        # prompt's search policy outright.
+        if not tool_calls and not forced_search_retry_used and looks_uncertain(reply_text):
+            forced_search_retry_used = True
+            try:
+                reply_text, tool_calls = call_nonstreaming(
+                    messages, model=model,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tool_choice={"type": "function", "function": {"name": "web_search"}},
+                )
+            except Exception:
+                pass  # fall through with the original (uncertain) reply
 
         assistant_msg: dict = {"role": "assistant", "content": reply_text}
         if tool_calls:
@@ -131,7 +138,8 @@ def main() -> None:
         if idx + 1 < len(args):
             model = args[idx + 1]
             cfg = load_config()
-            cfg["model"] = model
+            key = "nvidia_model" if cfg.get("provider") in ("nvidia", "nvidia_nim") else "model"
+            cfg[key] = model
             save_config(cfg)
 
     # Handle --no-color early (before anything prints)
@@ -201,7 +209,7 @@ def main() -> None:
         question = " ".join(args) if args else sys.stdin.read().strip()
         if not question:
             sys.exit(0)
-        one_shot(question, model=model or cfg["model"], temperature=temperature, max_tokens=max_tokens)
+        one_shot(question, model=model or get_runtime(cfg)["model"], temperature=temperature, max_tokens=max_tokens)
         return
 
     # Default TUI

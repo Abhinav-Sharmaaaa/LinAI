@@ -11,11 +11,11 @@ A lightweight, cross-platform AI assistant for your terminal with TUI, workflows
 - **TUI Mode** — Interactive terminal UI with markdown rendering, syntax highlighting, scrollback, and animations
 - **One-Shot Mode** — Pipe questions or run from scripts: `echo "question" | linai`
 - **Workflow System** — Create and execute multi-step plans (saved as JSON)
-- **Web Search** — Built-in DuckDuckGo search (no API key needed)
-- **File Operations** — Read, write, edit, search files in your home directory
+- **Web Search** — Built-in DuckDuckGo search (no API key needed), with per-result title/URL/snippet parsing and a lite-endpoint fallback
+- **File Operations** — Read, write, edit, and search files anywhere on disk — any absolute path on any drive (`C:\`, `D:\`, `/mnt/...`), not just your home directory
 - **Shell Commands** — Run commands safely with sandboxing
 - **Cross-Platform** — Works on Linux, macOS, and Windows
-- **Dual API Support** — OpenRouter **and** NVIDIA NIM API
+- **Dual API Support** — OpenRouter **and** NVIDIA NIM API, switchable live from the web UI (no restart needed)
 
 ## Installation
 
@@ -37,8 +37,11 @@ pip install -e .
 # Set your OpenRouter API key
 export OPENROUTER_API_KEY="sk-or-v1-..."
 
-# Run TUI (interactive)
+# Run TUI (interactive) — launches automatically when stdin is a real terminal and no args are given
 linai
+
+# Force TUI explicitly (e.g. from a wrapper script)
+linai --tui
 
 # One-shot mode
 linai "what is the latest Python version?"
@@ -83,16 +86,18 @@ linai-web 8080
 ```
 
 The web UI runs at `http://127.0.0.1:8765` and provides:
-- **Configuration Panel** — Set API keys, choose provider (OpenRouter/NVIDIA NIM), select models
+- **Configuration Panel** — Set API keys, choose provider (OpenRouter/NVIDIA NIM) via a toggle, select models. Switching providers here takes effect immediately — no restart needed.
 - **Logs Viewer** — Real-time log streaming with filtering
 - **Workflow Manager** — Create, list, execute workflows visually
 - **System Dashboard** — Disk, memory, CPU, uptime
-- **API Connection Tester** — Test credentials before saving
+- **API Connection Tester** — Tests against whatever's currently in the form (not just the last-saved config)
 - **Model Browser** — Browse available models with pricing
 
 ## Usage
 
 ### TUI Hotkeys
+
+> **Note:** only `linai` (bare, in a real terminal) or `linai --tui` actually launch the TUI. A `linai tui` subcommand isn't currently implemented in `cli.py` despite being mentioned in `--help`'s usage text — that's a known doc/behavior mismatch, not something you're doing wrong.
 
 | Key | Action |
 |-----|--------|
@@ -145,6 +150,7 @@ linai "what's new in Python 3.13?"
 # File operations
 linai "read my ~/.bashrc and suggest improvements"
 linai "create a Python script that fetches Bitcoin price"
+linai "search for pokemon files in D drive"
 
 # System tasks
 linai "check disk space and clean caches"
@@ -161,19 +167,28 @@ Config file: `~/.config/linai/config.json`
 
 ```json
 {
+  "provider": "openrouter",
+  "openrouter_key": "sk-or-v1-...",
+  "nvidia_key": "",
+  "nvidia_url": "https://integrate.api.nvidia.com/v1",
   "model": "google/gemma-4-26b-a4b-it:free",
+  "nvidia_model": "nvidia/nemotron-3-ultra",
   "temperature": 0.2,
   "max_tokens": 1000
 }
 ```
 
+`provider` is the active toggle (`openrouter` or `nvidia_nim` — `nvidia` is also accepted as an alias). Whichever provider is active determines which key/model field is actually used (`openrouter_key`/`model` vs `nvidia_key`/`nvidia_model`). `config.json` is read fresh on every request and takes priority over environment variables — editing it (directly or via the web UI) takes effect immediately, no restart required.
+
 ### Environment Variables
+
+Environment variables are used as a **fallback** for any field left empty in `config.json` (e.g. if you've never opened the web UI, or deliberately keep secrets out of the config file).
 
 | Variable | Description |
 |----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter API key (required for OpenRouter) |
-| `NVIDIA_API_KEY` / `NVIDIA_NIM_API_KEY` | NVIDIA NIM API key (required for NIM) |
-| `LINAI_API_PROVIDER` | `openrouter` (default) or `nvidia_nim` |
+| `OPENROUTER_API_KEY` | OpenRouter API key (used if `openrouter_key` is empty in config.json) |
+| `NVIDIA_API_KEY` / `NVIDIA_NIM_API_KEY` | NVIDIA NIM API key (used if `nvidia_key` is empty in config.json) |
+| `LINAI_API_PROVIDER` | `openrouter` (default) or `nvidia_nim` — only used if `provider` is unset in config.json |
 | `LINAI_MODEL` | Default model override |
 | `LINAI_OPENROUTER_MODEL` | OpenRouter default model |
 | `LINAI_NVIDIA_NIM_MODEL` | NVIDIA NIM default model |
@@ -181,6 +196,10 @@ Config file: `~/.config/linai/config.json`
 | `NO_COLOR` | Disable colors |
 
 ### Switching Providers
+
+The easiest way is the web UI toggle (`linai-web`) — it writes straight to `config.json` and applies on your very next message.
+
+You can also switch via environment variables, but note these are only used as a fallback for whatever `config.json` doesn't already specify:
 
 ```bash
 # Use OpenRouter (default)
@@ -232,6 +251,7 @@ See [NVIDIA NGC Catalog](https://build.nvidia.com) for full list.
 ## Windows Support
 
 - Uses `Path.home()` for cross-platform paths
+- File tools accept any absolute path, including bare drive letters (`D:`, `D:\`) which are normalized to that drive's root
 - Windows-specific system status (disk, memory, uptime via WMI/PowerShell)
 - Windows cache locations in `clean_cache`
 - Color support via ANSI (Windows 10+)

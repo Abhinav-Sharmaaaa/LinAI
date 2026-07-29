@@ -29,62 +29,43 @@ _RE_DENY = re.compile("|".join(DENY_PATTERNS))
 WORKFLOWS_FILE = HOME / ".config" / "linai" / "workflows.json"
 
 
-def tool_web_search(query: str, max_results: int = 5) -> str:
-    """Search the web via DuckDuckGo HTML (no API key needed)."""
-    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        return f"(web search error: {e})"
+_WIN_DRIVE_ONLY_RE = re.compile(r"^[a-zA-Z]:[\\/]?$")
 
-    # Parse results from DuckDuckGo HTML
-    results = []
-    # Pattern for result snippets
-    import re as _re
-    # Find result blocks
-    result_blocks = _re.findall(r'class="result__snippet".*?>(.*?)</a>', html, _re.DOTALL)
-    for i, block in enumerate(result_blocks[:max_results]):
-        # Clean HTML tags
-        clean = _re.sub(r"<[^>]+>", "", block)
-        clean = html.unescape(clean.strip())
-        if clean:
-            results.append(f"{i+1}. {clean}")
 
-    # Also try to get titles/links
-    title_blocks = _re.findall(r'class="result__title".*?>(.*?)</a>', html, _re.DOTALL)
-    link_blocks = _re.findall(r'class="result__url".*?>(.*?)</a>', html, _re.DOTALL)
+def _normalize_windows_drive(path: str) -> str:
+    """'D:' (and 'D:\\' / 'D:/') mean the root of that drive to a human,
+    but pathlib treats a bare 'D:' as drive-relative (relative to whatever
+    the current directory on D: happens to be), not absolute. Normalize to
+    an explicit root so it resolves the way the user actually means."""
+    if os.name == "nt" and _WIN_DRIVE_ONLY_RE.match(path):
+        return path[:2] + "\\"
+    return path
 
-    if not results and title_blocks:
-        for i, (title, link) in enumerate(zip(title_blocks[:max_results], link_blocks[:max_results])):
-            clean_title = _re.sub(r"<[^>]+>", "", title)
-            clean_link = _re.sub(r"<[^>]+>", "", link)
-            results.append(f"{i+1}. {html.unescape(clean_title.strip())} — {html.unescape(clean_link.strip())}")
 
-    return "\n".join(results) if results else "(no results found)"
+def _is_absolute_path(path: str) -> bool:
+    if Path(path).is_absolute():
+        return True
+    return os.name == "nt" and bool(_WIN_DRIVE_ONLY_RE.match(path))
 
 
 def _resolve_home(path: str) -> Path:
     """Resolve a relative path under $HOME, enforcing the sandbox."""
     p = Path(path)
-    if p.is_absolute():
+    if _is_absolute_path(path):
         raise PermissionError(f"expected relative path under $HOME, got: {path}")
     abs_path = (HOME / p).resolve()
-    if not str(abs_path).startswith(str(HOME) + "/") and abs_path != HOME:
+    if not str(abs_path).startswith(str(HOME) + os.sep) and abs_path != HOME:
         raise PermissionError(f"outside $HOME: {path}")
     # Check write deny prefixes for system-ish dirs within HOME
     return abs_path
 
 
 def _resolve_any(path: str) -> Path:
-    """Resolve any absolute path or relative-to-home path."""
-    p = Path(path)
-    if p.is_absolute():
-        return p
+    """Resolve any absolute path (including bare Windows drive letters like
+    'D:') or a path given relative to $HOME."""
+    path = _normalize_windows_drive(path)
+    if _is_absolute_path(path):
+        return Path(path)
     return _resolve_home(path)
 
 
@@ -102,14 +83,14 @@ def _read_limited(abs_path: Path, disp: str, limit: int = 4000) -> str:
 
 
 def tool_read_file(path: str) -> str:
-    ap = _resolve_home(path)
+    ap = _resolve_any(path)
     if not ap.is_file():
         return f"(no file: {path})"
     return _read_limited(ap, path)
 
 
 def tool_write_file(path: str, content: str, diff: str) -> str:
-    ap = _resolve_home(path)
+    ap = _resolve_any(path)
     resolved = str(ap)
     for prefix in WRITE_DENY_PREFIXES:
         if resolved.startswith(prefix):
@@ -120,7 +101,7 @@ def tool_write_file(path: str, content: str, diff: str) -> str:
 
 
 def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
-    ap = _resolve_home(path)
+    ap = _resolve_any(path)
     src = ap.read_text(errors="replace")
     if old_text not in src:
         return f"(edit failed: old_text not found in {path})"
@@ -147,7 +128,7 @@ def tool_run_cmd(cmd: str, timeout: int = 15) -> str:
 
 
 def tool_list_dir(path: str, pattern: str | None = None) -> str:
-    ap = _resolve_home(path)
+    ap = _resolve_any(path)
     if not ap.is_dir():
         return f"(not a dir: {path})"
     entries = sorted(ap.iterdir())
@@ -158,11 +139,7 @@ def tool_list_dir(path: str, pattern: str | None = None) -> str:
 
 
 def tool_grep_file(path: str, pattern: str, lines: int = 20) -> str:
-    p = Path(path)
-    if p.is_absolute() and any(str(p).startswith(prefix) for prefix in ("/etc/", "/var/", "/usr/", "/proc/", "/sys/")):
-        ap = p
-    else:
-        ap = _resolve_home(path)
+    ap = _resolve_any(path)
     try:
         src = ap.read_text(errors="replace")
     except Exception as e:
@@ -184,7 +161,7 @@ def tool_search_dir(
     max_files: int = 20,
 ) -> str:
     import fnmatch
-    ap = _resolve_home(path)
+    ap = _resolve_any(path)
     content_rx = re.compile(content_pattern) if content_pattern else None
     found: list[str] = []
     for dirpath, _, files in os.walk(str(ap)):
@@ -293,55 +270,153 @@ def tool_clean_cache(dry_run: bool = True) -> str:
     return result
 
 
-def tool_web_search(query: str, max_results: int = 5) -> str:
-    """Search the web via DuckDuckGo HTML. No API key needed."""
-    try:
-        # Use POST to html.duckduckgo.com to avoid bot detection
+_RE_TAG = re.compile(r"<[^>]+>")
+
+
+def _clean_text(s: str) -> str:
+    return html.unescape(_RE_TAG.sub("", s)).strip()
+
+
+def _resolve_ddg_url(href: str) -> str:
+    """DuckDuckGo's HTML result links are internal redirects like
+    '//duckduckgo.com/l/?uddg=<url-encoded-real-url>&rut=...'. Decode to
+    the actual destination so results are actually usable/citable."""
+    href = html.unescape(href.strip())
+    if "duckduckgo.com/l/" in href:
+        if href.startswith("//"):
+            href = "https:" + href
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+        real = qs.get("uddg", [None])[0]
+        if real:
+            return urllib.parse.unquote(real)
+    return href
+
+
+def _parse_ddg_results(html_content: str, max_results: int) -> list[dict]:
+    """Parse DuckDuckGo's HTML results block-by-block so a title, its URL,
+    and its snippet always come from the same result — never zipped
+    positionally against separate global lists, which silently misaligns
+    everything after any result missing a piece."""
+    results: list[dict] = []
+
+    # Each organic result lives inside a div whose class starts with
+    # "result results_links" (or "result results_links_deep ..."); split on
+    # those boundaries so title/url/snippet regexes only ever search within
+    # one result at a time.
+    blocks = re.split(r'(?=<div[^>]+class="result results_links)', html_content)
+
+    title_rx = re.compile(
+        r'<a\s+(?=[^>]*class="result__a")(?=[^>]*href="([^"]*)")[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+    snippet_rx = re.compile(
+        r'<a\s+(?=[^>]*class="result__snippet")[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+
+    for block in blocks:
+        if 'class="result__a"' not in block:
+            continue
+        tm = title_rx.search(block)
+        if not tm:
+            continue
+        href, title_html = tm.groups()
+        title = _clean_text(title_html)
+        if not title:
+            continue
+        url = _resolve_ddg_url(href)
+        sm = snippet_rx.search(block)
+        snippet = _clean_text(sm.group(1))[:400] if sm else ""
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def _fetch_ddg_html(query: str, use_lite: bool = False) -> str:
+    if use_lite:
+        url = "https://lite.duckduckgo.com/lite/"
+    else:
         url = "https://html.duckduckgo.com/html/"
-        data = urllib.parse.urlencode({"q": query}).encode()
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": "https://duckduckgo.com/",
-                "Origin": "https://duckduckgo.com",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            html_content = r.read().decode("utf-8", errors="replace")
+    data = urllib.parse.urlencode({"q": query}).encode()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": "https://duckduckgo.com/",
+            "Origin": "https://duckduckgo.com",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def _parse_ddg_lite_results(html_content: str, max_results: int) -> list[dict]:
+    """lite.duckduckgo.com uses a plain table layout: a result-link <a>,
+    followed by a result-snippet <td>, followed by a result-url <span>.
+    Used as a fallback when the main HTML endpoint returns nothing
+    (it sometimes serves a CAPTCHA/interstitial instead of results)."""
+    results: list[dict] = []
+    row_rx = re.compile(
+        r'<a[^>]+class="result-link"[^>]+href="([^"]*)"[^>]*>(.*?)</a>'
+        r'(?:(?!<a[^>]+class="result-link").)*?'
+        r'class="result-snippet"[^>]*>(.*?)</td>',
+        re.DOTALL,
+    )
+    for m in row_rx.finditer(html_content):
+        href, title_html, snippet_html = m.groups()
+        title = _clean_text(title_html)
+        if not title:
+            continue
+        results.append({
+            "title": title,
+            "url": _resolve_ddg_url(href),
+            "snippet": _clean_text(snippet_html)[:400],
+        })
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def tool_web_search(query: str, max_results: int = 5) -> str:
+    """Search the web via DuckDuckGo. No API key needed.
+
+    Tries the full HTML endpoint first (richer snippets); if that returns
+    nothing (DDG occasionally serves an interstitial instead of results to
+    non-browser clients) falls back to the lite endpoint.
+    """
+    max_results = max(1, min(max_results, 10))
+    errors: list[str] = []
+    results: list[dict] = []
+
+    try:
+        html_content = _fetch_ddg_html(query, use_lite=False)
+        results = _parse_ddg_results(html_content, max_results)
     except Exception as e:
-        return f"(web search failed: {e})"
-
-    # Parse results from DuckDuckGo HTML
-    results = []
-    import re
-    title_pattern = re.compile(
-        r'class="result__title".*?href="(.*?)".*?>(.*?)</a>',
-        re.DOTALL
-    )
-    snippet_pattern = re.compile(
-        r'class="result__snippet".*?>(.*?)</a>',
-        re.DOTALL
-    )
-
-    titles = title_pattern.findall(html_content)
-    snippets = snippet_pattern.findall(html_content)
-
-    for i, (url, title) in enumerate(titles[:max_results]):
-        clean_title = re.sub(r"<[^>]+>", "", title).strip()
-        clean_url = html.unescape(url).strip()
-        snippet = ""
-        if i < len(snippets):
-            snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip()[:300]
-        results.append(f"{i+1}. {clean_title}\n   {clean_url}\n   {snippet}")
+        errors.append(f"html endpoint: {e}")
 
     if not results:
-        return "(no results found)"
+        try:
+            html_content = _fetch_ddg_html(query, use_lite=True)
+            results = _parse_ddg_lite_results(html_content, max_results)
+        except Exception as e:
+            errors.append(f"lite endpoint: {e}")
 
-    return "\n\n".join(results)
+    if not results:
+        detail = f" ({'; '.join(errors)})" if errors else ""
+        return f"(no results found for: {query}){detail}"
+
+    out = []
+    for i, r in enumerate(results, 1):
+        entry = f"{i}. {r['title']}\n   {r['url']}"
+        if r["snippet"]:
+            entry += f"\n   {r['snippet']}"
+        out.append(entry)
+    return "\n\n".join(out)
 
 
 # ── Workflow system ──────────────────────────────────────────────────────────
@@ -433,11 +508,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": f"Read a file in {HOME}. Use before editing.",
+            "description": "Read a file anywhere on disk (any absolute path, or relative to $HOME). Use before editing.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Relative path under $HOME"},
+                    "path": {"type": "string", "description": "Absolute path, or relative to $HOME"},
                 },
                 "required": ["path"],
             },
@@ -447,7 +522,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": f"Overwrite or create a file in {HOME}.",
+            "description": "Overwrite or create a file anywhere on disk (any absolute path, or relative to $HOME). Blocked for a small set of protected system paths.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -494,7 +569,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": f"List a directory in {HOME} (optional glob pattern).",
+            "description": "List a directory anywhere on disk (any absolute path, or relative to $HOME; optional glob pattern).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -509,7 +584,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "grep_file",
-            "description": "Find lines matching a regex in a file.",
+            "description": "Find lines matching a regex in a file anywhere on disk (any absolute path, or relative to $HOME).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -525,7 +600,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_dir",
-            "description": "Find files under a dir matching a name glob; optionally grep each.",
+            "description": "Find files under any directory on disk (any absolute path, or relative to $HOME) matching a name glob; optionally grep each.",
             "parameters": {
                 "type": "object",
                 "properties": {
