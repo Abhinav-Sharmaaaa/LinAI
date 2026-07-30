@@ -56,6 +56,21 @@ SYSTEM_MSG = (
     "year did X happen'). This search-then-fetch sequence — search broadly, open the promising pages, "
     "synthesize your answer from their actual content — is how you produce accurate, well-sourced "
     "answers instead of guessing from a two-line snippet.\n"
+    "- web_search accepts an optional time_range ('day'/'week'/'month'/'year') to filter to recently "
+    "indexed results — use 'week' for 'in the last 7 days' style requests. It's a best-effort DDG "
+    "freshness signal, not a hard guarantee; say so if precision matters.\n"
+    "\n"
+    "WORKFLOW SYSTEM:\n"
+    "- create_workflow saves a named multi-step plan. execute_workflow runs a saved plan once, right "
+    "now, when explicitly called.\n"
+    "- linai has NO built-in daemon/background scheduler of its own. Recurring execution ('every day', "
+    "'when I turn on my computer', etc.) is done by handing the workflow off to the OS's own scheduler "
+    "via schedule_workflow — that's the ONLY way anything here runs automatically. When a request "
+    "implies recurring/automatic execution: first create_workflow if one doesn't already exist for it, "
+    "then call schedule_workflow(workflow_id, frequency, time_of_day). Don't just call list_workflows "
+    "and stop, and don't silently do nothing — actually create and schedule it, then tell the user what "
+    "you set up (frequency, time, and that it's a Windows Task Scheduler task / cron entry under the "
+    "hood) and how to check on it (list_scheduled_workflows) or remove it (unschedule_workflow).\n"
     "\n"
     "Be concise. Use tools freely — no need to ask confirmation for routine operations. "
     "After edits, summarize the change in one line. "
@@ -113,6 +128,29 @@ def looks_uncertain(text: str) -> bool:
     return any(marker in low for marker in _UNCERTAINTY_MARKERS)
 
 
+_RECURRING_INTENT_MARKERS = (
+    "every day", "everyday", "each day", "daily",
+    "every week", "weekly", "every hour", "hourly",
+    "when i open", "when i turn on", "when i start", "on startup",
+    "automatically", "recurring", "on a schedule", "scheduled",
+)
+
+
+def looks_like_recurring_request(text: str) -> bool:
+    """Heuristic: does the user's message ask for something recurring/
+    automatic? ('every day', 'automatically', etc.) Weaker models often
+    respond to these with list_workflows-and-stop or nothing at all instead
+    of actually calling create_workflow + schedule_workflow; this lets the
+    caller force a create_workflow-required retry when that happens."""
+    low = text.lower()
+    return any(marker in low for marker in _RECURRING_INTENT_MARKERS)
+
+
+def made_tool_call(tool_calls: list[dict], name: str) -> bool:
+    """Did this turn's tool_calls list include a call to the given tool?"""
+    return any(tc.get("function", {}).get("name") == name for tc in tool_calls)
+
+
 def call_streaming(
     messages: list[dict],
     model: str | None = None,
@@ -121,6 +159,7 @@ def call_streaming(
     on_text: str | None = None,
     on_tool_call: dict | None = None,
     spinner_cb: int | None = None,
+    tool_choice: str | dict = "auto",
 ) -> tuple[str, list[dict]]:
     """Stream an API response (OpenRouter or NVIDIA NIM).
 
@@ -144,7 +183,7 @@ def call_streaming(
             f"Set it via the web UI or the appropriate environment variable."
         )
 
-    body = _build_body(messages, active_model, True, temperature, max_tokens)
+    body = _build_body(messages, active_model, True, temperature, max_tokens, tool_choice)
     req = urllib.request.Request(runtime["api_url"], data=body, headers=_get_headers(runtime), method="POST")
 
     reply_chunks: list[str] = []

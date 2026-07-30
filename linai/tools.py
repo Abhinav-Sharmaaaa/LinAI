@@ -7,7 +7,9 @@ import html
 import json as _json
 import os
 import re
+import shlex
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -334,12 +336,16 @@ def _parse_ddg_results(html_content: str, max_results: int) -> list[dict]:
     return results
 
 
-def _fetch_ddg_html(query: str, use_lite: bool = False) -> str:
+def _fetch_ddg_html(query: str, use_lite: bool = False, time_range: str | None = None) -> str:
     if use_lite:
         url = "https://lite.duckduckgo.com/lite/"
     else:
         url = "https://html.duckduckgo.com/html/"
-    data = urllib.parse.urlencode({"q": query}).encode()
+    params = {"q": query}
+    if time_range:
+        # DDG's freshness filter: d=past day, w=past week, m=past month, y=past year
+        params["df"] = time_range
+    data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(
         url,
         data=data,
@@ -410,11 +416,25 @@ def _brave_search(query: str, max_results: int, api_key: str) -> list[dict]:
     return results
 
 
-def tool_web_search(query: str, max_results: int = 8) -> str:
+_TIME_RANGE_MAP = {
+    "day": "d", "d": "d",
+    "week": "w", "w": "w",
+    "month": "m", "m": "m",
+    "year": "y", "y": "y",
+}
+
+
+def tool_web_search(query: str, max_results: int = 8, time_range: str | None = None) -> str:
     """Search the web. Uses Brave Search (a real ranked search API) if a
     brave_api_key is configured — https://brave.com/search/api/, free tier
     available — otherwise falls back to scraping DuckDuckGo's HTML (no key
     needed, but a raw scrape has no real ranking/relevance model behind it).
+
+    time_range: restrict to results DDG considers indexed/updated within
+    'day', 'week', 'month', or 'year'. Note this is DDG's own freshness
+    signal (often based on page-modified/crawl date), not a guarantee every
+    result is truly that recent — treat it as a filter, not a certainty.
+    Ignored when using Brave (not supported in the current integration).
 
     For anything requiring precise facts, numbers, or quotes, follow up
     with web_fetch on the most relevant result(s) — snippets are often too
@@ -423,6 +443,7 @@ def tool_web_search(query: str, max_results: int = 8) -> str:
     max_results = max(1, min(max_results, 10))
     errors: list[str] = []
     results: list[dict] = []
+    df = _TIME_RANGE_MAP.get((time_range or "").lower())
 
     try:
         from linai.config import load_config
@@ -438,14 +459,14 @@ def tool_web_search(query: str, max_results: int = 8) -> str:
 
     if not results:
         try:
-            html_content = _fetch_ddg_html(query, use_lite=False)
+            html_content = _fetch_ddg_html(query, use_lite=False, time_range=df)
             results = _parse_ddg_results(html_content, max_results)
         except Exception as e:
             errors.append(f"html endpoint: {e}")
 
     if not results:
         try:
-            html_content = _fetch_ddg_html(query, use_lite=True)
+            html_content = _fetch_ddg_html(query, use_lite=True, time_range=df)
             results = _parse_ddg_lite_results(html_content, max_results)
         except Exception as e:
             errors.append(f"lite endpoint: {e}")
@@ -593,8 +614,158 @@ def tool_list_workflows(args: dict = None) -> str:
 
     lines = []
     for wf_id, wf in workflows.items():
-        lines.append(f"  {wf_id}  {wf['name']} — {wf['description']} ({len(wf['steps'])} steps)")
+        sched = wf.get("schedule")
+        sched_note = f" [scheduled: {sched['frequency']} @ {sched['time_of_day']}]" if sched else ""
+        lines.append(f"  {wf_id}  {wf['name']} — {wf['description']} ({len(wf['steps'])} steps){sched_note}")
     return "Saved workflows:\n" + "\n".join(lines)
+
+
+def _workflow_run_command() -> str:
+    """Base command that runs a workflow directly and deterministically,
+    without going through the LLM — this is what a scheduled/unattended
+    run actually executes, so it can't misfire on tool-calling quirks."""
+    return f'"{sys.executable}" -m linai'
+
+
+def tool_schedule_workflow(workflow_id: str, frequency: str = "daily", time_of_day: str = "09:00") -> str:
+    """Register a recurring OS-level scheduled task that runs a saved
+    workflow automatically — Windows Task Scheduler on Windows, cron on
+    Linux/macOS. This is what actually makes 'every day' / 'when I turn on
+    my computer' style requests work: linai itself has no built-in
+    scheduler or background process, so 'scheduling' something here always
+    means handing it off to the OS's own scheduler.
+
+    frequency: 'hourly', 'daily', or 'weekly' (weekly runs Sundays).
+    time_of_day: 'HH:MM' 24-hour, ignored for 'hourly'.
+    The scheduled run calls `--run-workflow` directly (bypassing the LLM
+    entirely) so it executes deterministically with nobody watching.
+    """
+    workflows = _load_workflows()
+    if workflow_id not in workflows:
+        return f"(workflow not found: {workflow_id}. Create one first with create_workflow.)"
+
+    frequency = frequency.lower().strip()
+    if frequency not in ("hourly", "daily", "weekly"):
+        return f"(unsupported frequency: {frequency!r}. Use 'hourly', 'daily', or 'weekly'.)"
+
+    try:
+        hh_s, mm_s = time_of_day.split(":")
+        hh, mm = int(hh_s), int(mm_s)
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise ValueError
+    except Exception:
+        return f"(invalid time_of_day: {time_of_day!r}, expected 24h 'HH:MM')"
+
+    task_name = f"linai-wf-{workflow_id}"
+    base_cmd = _workflow_run_command()
+
+    if os.name == "nt":
+        cmd_str = f'{base_cmd} --run-workflow {workflow_id}'
+        args = [
+            "schtasks", "/create", "/f",
+            "/tn", task_name,
+            "/tr", cmd_str,
+            "/sc", frequency,
+        ]
+        if frequency != "hourly":
+            args += ["/st", f"{hh:02d}:{mm:02d}"]
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+        except Exception as e:
+            return f"(failed to create scheduled task: {e})"
+        if r.returncode != 0:
+            return f"(schtasks failed: {(r.stderr or r.stdout).strip()})"
+        msg = f"Scheduled Windows task '{task_name}' — runs workflow '{workflows[workflow_id]['name']}' {frequency}"
+        if frequency != "hourly":
+            msg += f" at {hh:02d}:{mm:02d}"
+        msg += f". View/remove via Task Scheduler, or `schtasks /delete /tn {task_name} /f` / unschedule_workflow."
+    else:
+        if frequency == "hourly":
+            cron_time = f"{mm} * * * *"
+        elif frequency == "weekly":
+            cron_time = f"{mm} {hh} * * 0"
+        else:
+            cron_time = f"{mm} {hh} * * *"
+        log_file = str(HOME / ".config" / "linai" / f"schedule-{workflow_id}.log")
+        cmd_str = f'{base_cmd} --run-workflow {workflow_id}'
+        cron_line = f"{cron_time} {cmd_str} >> {shlex.quote(log_file)} 2>&1 # linai-wf-{workflow_id}"
+
+        try:
+            existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            current = existing.stdout if existing.returncode == 0 else ""
+        except Exception as e:
+            return f"(failed to read crontab: {e})"
+
+        lines = [l for l in current.splitlines() if f"# linai-wf-{workflow_id}" not in l]
+        lines.append(cron_line)
+        new_crontab = "\n".join(lines) + "\n"
+
+        try:
+            p = subprocess.run(["crontab", "-"], input=new_crontab, capture_output=True, text=True)
+        except Exception as e:
+            return f"(failed to write crontab: {e})"
+        if p.returncode != 0:
+            return f"(crontab install failed: {(p.stderr or p.stdout).strip()})"
+        msg = f"Scheduled cron job for workflow '{workflows[workflow_id]['name']}' — {frequency}"
+        msg += f" at {hh:02d}:{mm:02d}" if frequency != "hourly" else f", minute {mm} of every hour"
+        msg += f". Output logged to {log_file}. Remove with unschedule_workflow."
+
+    workflows[workflow_id]["schedule"] = {
+        "frequency": frequency, "time_of_day": time_of_day, "task_name": task_name,
+    }
+    _save_workflows(workflows)
+    return msg
+
+
+def tool_unschedule_workflow(workflow_id: str) -> str:
+    """Remove a workflow's recurring OS-level schedule. Does not delete the
+    workflow itself — only stops it from running automatically."""
+    workflows = _load_workflows()
+    if workflow_id not in workflows:
+        return f"(workflow not found: {workflow_id})"
+
+    task_name = f"linai-wf-{workflow_id}"
+    if os.name == "nt":
+        try:
+            r = subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
+                                capture_output=True, text=True, timeout=15)
+        except Exception as e:
+            return f"(failed to delete scheduled task: {e})"
+        if r.returncode != 0 and "cannot find" not in (r.stderr or "").lower():
+            return f"(schtasks delete failed: {(r.stderr or r.stdout).strip()})"
+        msg = f"Removed Windows scheduled task '{task_name}'."
+    else:
+        try:
+            existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            current = existing.stdout if existing.returncode == 0 else ""
+        except Exception as e:
+            return f"(failed to read crontab: {e})"
+        lines = [l for l in current.splitlines() if f"# linai-wf-{workflow_id}" not in l]
+        new_crontab = "\n".join(lines) + ("\n" if lines else "")
+        try:
+            p = subprocess.run(["crontab", "-"], input=new_crontab, capture_output=True, text=True)
+        except Exception as e:
+            return f"(failed to write crontab: {e})"
+        if p.returncode != 0:
+            return f"(crontab update failed: {(p.stderr or p.stdout).strip()})"
+        msg = f"Removed cron entry for workflow {workflow_id}."
+
+    workflows[workflow_id].pop("schedule", None)
+    _save_workflows(workflows)
+    return msg
+
+
+def tool_list_scheduled_workflows(args: dict = None) -> str:
+    """List workflows that currently have a recurring OS-level schedule attached."""
+    workflows = _load_workflows()
+    scheduled = {wid: wf for wid, wf in workflows.items() if wf.get("schedule")}
+    if not scheduled:
+        return "(no workflows are currently scheduled)"
+    lines = []
+    for wid, wf in scheduled.items():
+        sched = wf["schedule"]
+        lines.append(f"  {wid}  {wf['name']} — {sched['frequency']} at {sched['time_of_day']} (task: {sched['task_name']})")
+    return "Scheduled workflows:\n" + "\n".join(lines)
 
 import time
 
@@ -751,6 +922,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
                     "max_results": {"type": "integer", "default": 8, "description": "Max results to return. Prefer 8-10 for broad/informational queries so you have enough to filter out irrelevant hits yourself."},
+                    "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Restrict to results DDG considers recently indexed/updated. Use 'week' for 'in the last 7 days' style requests. This is a best-effort freshness filter (based on DDG's own crawl/page-modified signal), not a hard guarantee — mention that to the user rather than presenting results as certainly that recent."},
                 },
                 "required": ["query"],
             },
@@ -822,6 +994,50 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_workflow",
+            "description": (
+                "Register a saved workflow to run automatically and recurringly via the OS's own "
+                "scheduler (Windows Task Scheduler / cron) — this is the ONLY way anything in linai "
+                "runs on a recurring basis ('every day', 'when I turn on my computer', etc.); linai "
+                "itself has no daemon or background scheduler. The scheduled run bypasses the LLM "
+                "entirely (calls --run-workflow directly) so it executes deterministically unattended."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string", "description": "ID from create_workflow"},
+                    "frequency": {"type": "string", "enum": ["hourly", "daily", "weekly"], "default": "daily"},
+                    "time_of_day": {"type": "string", "default": "09:00", "description": "24h 'HH:MM', ignored for 'hourly'"},
+                },
+                "required": ["workflow_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unschedule_workflow",
+            "description": "Remove a workflow's recurring OS-level schedule. The workflow itself is kept, only the automatic trigger is removed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string"},
+                },
+                "required": ["workflow_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_scheduled_workflows",
+            "description": "List workflows that currently have a recurring OS-level schedule attached.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 TOOL_DISPATCH: dict[str, Any] = {
@@ -840,4 +1056,7 @@ TOOL_DISPATCH: dict[str, Any] = {
     "create_workflow":  lambda a: tool_create_workflow(**a),
     "execute_workflow": lambda a: tool_execute_workflow(**a),
     "list_workflows":   lambda a: tool_list_workflows(),
+    "schedule_workflow": lambda a: tool_schedule_workflow(**a),
+    "unschedule_workflow": lambda a: tool_unschedule_workflow(**a),
+    "list_scheduled_workflows": lambda a: tool_list_scheduled_workflows(),
 }

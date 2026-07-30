@@ -12,7 +12,7 @@ import threading
 from typing import Any, Optional
 
 from linai import __version__
-from linai.agent import SPINNER, SYSTEM_MSG, call_streaming, execute_tool
+from linai.agent import SYSTEM_MSG, call_streaming, execute_tool, looks_like_recurring_request, made_tool_call
 from linai.config import (
     CONFIG_DIR,
     CONFIG_FILE,
@@ -58,6 +58,7 @@ class TUI:
         self._pending_cancel = False
         self._last_redraw = 0.0
         self._needs_redraw = True
+        self._stdout_lock = threading.Lock()
         if no_color:
             init_colors(force_no_color=True)
 
@@ -349,19 +350,56 @@ class TUI:
         return text
 
     # ── animated progress display ──────────────────────────────────────────
-    def _animate_spinner(self, message: str = "", duration: float = 2.0) -> None:
-        """Show animated spinner with message."""
+    def _spin_while(self, target, *args, message: str = "", **kwargs):
+        """Run a blocking call on a background thread while continuously
+        animating a spinner in the status corner. Unlike ticking the
+        spinner only when a chunk of text happens to arrive, this actually
+        animates during the dead time before anything comes back at all —
+        the initial network wait, or a slow tool call like web_search —
+        which previously showed nothing whatsoever until something arrived.
+        Returns target's return value; re-raises any exception it raised.
+        """
         c = C()
-        start = time.monotonic()
+        result_box: dict = {}
+        error_box: dict = {}
+
+        def _runner():
+            try:
+                result_box["value"] = target(*args, **kwargs)
+            except BaseException as e:
+                error_box["error"] = e
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
         i = 0
-        while time.monotonic() - start < duration and not self._pending_cancel:
-            frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
-            sys.stdout.write(f"\r{c['cyan']}{frame}{c['reset']} {message}")
-            sys.stdout.flush()
-            time.sleep(0.08)
-            i += 1
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
+        # Fixed spot on the status row (right-aligned), same row the scroll
+        # indicator uses. Must be an absolute cursor position — writing
+        # relative to "wherever the cursor currently is" only holds still
+        # if nothing else ever moves the cursor between ticks, which isn't
+        # true here (tool output, redraws, scrolling all do).
+        label_width = len(message) + 4
+        col = max(1, self.cols - label_width)
+        try:
+            while t.is_alive():
+                with self._stdout_lock:
+                    frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
+                    suffix = f" {c['dim']}{message}{c['reset']}" if message else ""
+                    sys.stdout.write(f"\033[s\033[{self._status_row};{col}H{c['dim']}{frame}{c['reset']}{suffix}\033[K\033[u")
+                    sys.stdout.flush()
+                i += 1
+                time.sleep(0.08)
+        finally:
+            # Always clear the spinner, even if KeyboardInterrupt fired
+            # mid-sleep and is about to unwind straight out of this
+            # function — otherwise a stray frame is left on screen.
+            with self._stdout_lock:
+                sys.stdout.write(f"\033[s\033[{self._status_row};{col}H\033[K\033[u")
+                sys.stdout.flush()
+        t.join()
+
+        if "error" in error_box:
+            raise error_box["error"]
+        return result_box.get("value")
 
     # ── input ──────────────────────────────────────────────────────────
     def read_line(self) -> str | None:
@@ -481,7 +519,7 @@ class TUI:
         c = C()
         y = self._input_row
         sys.stdout.write(f"\033[{y};1H\033[K{c['cyan']}linai> {c['reset']}{buf}")
-        sys.stdout.write(f"\033[{y};{7 + cursor}H")
+        sys.stdout.write(f"\033[{y};{8 + cursor}H")
         sys.stdout.flush()
 
     # ── model picker ───────────────────────────────────────────────────
@@ -664,11 +702,14 @@ class TUI:
         self.messages.append({"role": "user", "content": user_text})
         self._save_history(self.messages)  # Save immediately after user message
 
+        recurring_intent = looks_like_recurring_request(user_text)
+        forced_workflow_retry_used = False
+        created_workflow_this_turn = False
+
         while True:
             reply_chunks: list[str] = []
             tool_calls: list[dict] = []
-            sp = 0
-            spinner_active = True
+            self._pending_cancel = False
 
             # _quick_draw_chunk renders each raw network chunk independently
             # for a live "typing" effect, but a chunk can split mid-word or
@@ -680,47 +721,74 @@ class TUI:
             stream_all_start = len(self.all_output)
 
             def on_text(chunk: str) -> None:
-                nonlocal sp
+                # Ctrl+C interrupts this thread's wait loop, not the
+                # in-flight network call on the background thread — if
+                # that orphaned call is still streaming when the user has
+                # already moved on, don't let it keep mutating output.
+                if self._pending_cancel:
+                    return
                 reply_chunks.append(chunk)
                 self._quick_draw_chunk(chunk)
-                # Update spinner
-                if spinner_active:
-                    sys.stdout.write(
-                        f"\r\033[500C\033[K"
-                        f"{c['dim']}{SPINNER[sp]}{c['reset']}")
-                    sp = (sp + 1) % len(SPINNER)
 
             try:
-                reply_text, tool_calls = call_streaming(
+                # Runs call_streaming on a background thread while this
+                # thread continuously animates the spinner — including
+                # during the network wait before the first token arrives,
+                # which previously showed nothing at all.
+                reply_text, tool_calls = self._spin_while(
+                    call_streaming,
                     self.messages,
                     model=self._model,
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     on_text=on_text,
+                    message="thinking...",
                 )
             except KeyboardInterrupt:
-                spinner_active = False
-                sys.stdout.write(f"\r\033[500C\033[K")
-                sys.stdout.flush()
+                self._pending_cancel = True
                 self.draw_label("(cancelled)")
                 self.messages.append({"role": "assistant", "content": "(cancelled by user)"})
                 self._save_history(self.messages)
                 self.full_redraw(force=True)
                 return
             except Exception as e:
-                spinner_active = False
-                sys.stdout.write(f"\r\033[500C\033[K")
-                sys.stdout.flush()
                 self.draw_error(f"model error: {e}")
                 self.messages.append({"role": "assistant", "content": f"(error: {e})"})
                 self._save_history(self.messages)
                 self.full_redraw(force=True)
                 return
 
-            spinner_active = False
-            # Clear spinner
-            sys.stdout.write(f"\r\033[500C\033[K")
-            sys.stdout.flush()
+            if made_tool_call(tool_calls, "create_workflow"):
+                created_workflow_this_turn = True
+
+            if (not tool_calls and recurring_intent and not created_workflow_this_turn
+                    and not forced_workflow_retry_used):
+                forced_workflow_retry_used = True
+                self.messages.append({"role": "assistant", "content": reply_text})
+                self.messages.append({
+                    "role": "user",
+                    "content": (
+                        "Actually create this as a saved workflow now with create_workflow, "
+                        "then schedule it with schedule_workflow so it runs automatically as requested."
+                    ),
+                })
+                try:
+                    reply_text, tool_calls = self._spin_while(
+                        call_streaming,
+                        self.messages,
+                        model=self._model,
+                        temperature=self._temperature,
+                        max_tokens=self._max_tokens,
+                        on_text=on_text,
+                        message="thinking...",
+                        tool_choice={"type": "function", "function": {"name": "create_workflow"}},
+                    )
+                except Exception:
+                    pass  # fall through with the original reply
+                # Undo the two nudge messages we just appended above — the
+                # normal assistant_msg/tool result appends below will add
+                # the real turn back in, whether or not the retry helped.
+                del self.messages[-2:]
 
             # Discard the provisional per-chunk lines drawn live during
             # streaming and re-render the complete text in one pass — this
@@ -754,7 +822,13 @@ class TUI:
                 except (json.JSONDecodeError, TypeError):
                     pass
                 self.draw_tool_call(tc["function"]["name"], raw_args)
-                result = cap(str(execute_tool(tc)))
+                try:
+                    result = cap(str(self._spin_while(
+                        execute_tool, tc, message=f"running {tc['function']['name']}...",
+                    )))
+                except KeyboardInterrupt:
+                    self._pending_cancel = True
+                    result = "(cancelled by user)"
                 self.draw_tool_result(result)
                 self.messages.append({
                     "role": "tool",
@@ -762,6 +836,8 @@ class TUI:
                     "name": tc["function"]["name"],
                     "content": result,
                 })
+                if tc["function"]["name"] == "create_workflow":
+                    created_workflow_this_turn = True
 
             # Trim context window
             self.messages[:] = [self.messages[0]] + self.messages[-(MAX_TURNS * 2):]

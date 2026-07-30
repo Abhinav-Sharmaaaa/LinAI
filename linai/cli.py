@@ -71,6 +71,9 @@ def one_shot(
     spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     sp = 0
     forced_search_retry_used = False
+    forced_workflow_retry_used = False
+    recurring_intent = looks_like_recurring_request(question)
+    created_workflow_this_turn = False
 
     while True:
         try:
@@ -98,6 +101,35 @@ def one_shot(
             except Exception:
                 pass  # fall through with the original (uncertain) reply
 
+        if made_tool_call(tool_calls, "create_workflow"):
+            created_workflow_this_turn = True
+
+        # Safety net: the user asked for something recurring/automatic, but
+        # this turn is about to end (no more tool calls) without ever
+        # having called create_workflow — e.g. the model just called
+        # list_workflows and stopped, or answered in prose only. Force one
+        # more pass requiring create_workflow instead of silently doing
+        # nothing useful.
+        if (not tool_calls and recurring_intent and not created_workflow_this_turn
+                and not forced_workflow_retry_used):
+            forced_workflow_retry_used = True
+            messages.append({"role": "assistant", "content": reply_text})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Actually create this as a saved workflow now with create_workflow, "
+                    "then schedule it with schedule_workflow so it runs automatically as requested."
+                ),
+            })
+            try:
+                reply_text, tool_calls = call_nonstreaming(
+                    messages, model=model,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tool_choice={"type": "function", "function": {"name": "create_workflow"}},
+                )
+            except Exception:
+                pass  # fall through with the original reply
+
         assistant_msg: dict = {"role": "assistant", "content": reply_text}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
@@ -123,6 +155,8 @@ def one_shot(
                 "name": name,
                 "content": result,
             })
+            if name == "create_workflow":
+                created_workflow_this_turn = True
 
         messages[:] = [messages[0]] + messages[-(MAX_TURNS * 2):]
         _save_history(messages)
@@ -130,6 +164,21 @@ def one_shot(
 
 def main() -> None:
     args = sys.argv[1:]
+
+    # --run-workflow: deterministic, LLM-free execution of a saved workflow.
+    # This is what schedule_workflow's OS-level task/cron entry actually
+    # calls — an unattended scheduled run must not depend on the model
+    # correctly choosing to call execute_workflow; this runs it directly.
+    if "--run-workflow" in args:
+        idx = args.index("--run-workflow")
+        if idx + 1 >= len(args):
+            print("error: --run-workflow requires a workflow id", file=sys.stderr)
+            sys.exit(1)
+        from linai.tools import tool_execute_workflow
+        workflow_id = args[idx + 1]
+        result = tool_execute_workflow(workflow_id)
+        print(result)
+        return
 
     # Handle --model override early
     model = None
@@ -232,6 +281,8 @@ Usage:
   linai --help               show this help
   linai --model <id> "q"     per-invocation model override
   linai --temperature 0.7 "q"  temperature override
+  linai --run-workflow <id>  run a saved workflow directly, no LLM call
+                             (this is what a scheduled task/cron entry calls)
   echo "q" | linai            scripted (no TUI)
 
 TUI hotkeys:
@@ -257,6 +308,11 @@ Workflow tools (available to the model):
   create_workflow  - define a multi-step plan (name, description, steps[])
   execute_workflow - run a saved workflow by ID
   list_workflows   - show all saved workflows
+  schedule_workflow - register a workflow to run recurringly via Windows
+                      Task Scheduler / cron (the only real scheduling
+                      linai has — no built-in daemon)
+  unschedule_workflow      - remove a workflow's recurring schedule
+  list_scheduled_workflows - show workflows with an active schedule
 
 Env:
   OPENROUTER_API_KEY   required
