@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from linai import __version__
-from linai.agent import SYSTEM_MSG, call_nonstreaming, execute_tool, looks_uncertain
+from linai.agent import (
+    SYSTEM_MSG,
+    call_nonstreaming,
+    execute_tool,
+    looks_uncertain,
+    looks_like_recurring_request,
+    made_tool_call,
+)
 from linai.config import (
     CONFIG_DIR,
     CONFIG_FILE,
