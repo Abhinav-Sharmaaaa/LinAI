@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .webui import WebServer
+from .server import WebServer
 
 __all__ = ["WebServer"]

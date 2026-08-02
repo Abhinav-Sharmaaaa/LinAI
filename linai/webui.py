@@ -11,7 +11,6 @@ import threading
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from string import Template
 from urllib.parse import parse_qs, urlparse
 
 try:
@@ -68,290 +67,49 @@ except ImportError:
             "model": cfg.get("model") or "",
         }
 
-WEB_DIR = Path(__file__).parent / "web"
-
-HTML_TEMPLATE = Template("""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>linai Configuration</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        h1 { color: #00d9ff; margin-bottom: 24px; font-size: 28px; }
-        .card { background: #16213e; border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid #0f3460; }
-        h2 { color: #00d9ff; margin-bottom: 16px; font-size: 18px; }
-        .field { margin-bottom: 16px; }
-        label { display: block; margin-bottom: 6px; color: #aaa; font-size: 14px; }
-        input, select { width: 100%; padding: 10px 12px; background: #0f3460; border: 1px solid #0f3460; border-radius: 6px; color: #eee; font-size: 14px; }
-        input:focus, select:focus { outline: none; border-color: #00d9ff; }
-        .btn { padding: 12px 24px; background: #00d9ff; color: #1a1a2e; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-        .btn:hover { background: #00b8d4; }
-        .btn-secondary { background: #0f3460; color: #eee; }
-        .btn-secondary:hover { background: #1a5c8a; }
-        .btn-group { display: flex; gap: 12px; margin-top: 20px; }
-        .status { padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
-        .status.ok { background: #0f3460; border: 1px solid #00d9ff; color: #00d9ff; }
-        .status.error { background: #3d0f1a; border: 1px solid #ff3366; color: #ff3366; }
-        .provider-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
-        .tab { padding: 10px 20px; background: #0f3460; border: 1px solid #0f3460; border-radius: 6px; color: #aaa; cursor: pointer; transition: all 0.2s; }
-        .tab.active { background: #00d9ff; color: #1a1a2e; border-color: #00d9ff; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        .logs { background: #0f0f1a; border: 1px solid #0f3460; border-radius: 8px; padding: 16px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.5; }
-        .log-line { margin-bottom: 4px; }
-        .log-line.error { color: #ff3366; }
-        .log-line.warn { color: #ffaa00; }
-        .log-line.info { color: #00d9ff; }
-        .log-line.success { color: #00ff88; }
-        .hidden { display: none !important; }
-        .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-        @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
-        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #0f3460; border-top-color: #00d9ff; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>linai Configuration</h1>
-
-        <div id="status"></div>
-
-        <div class="provider-tabs">
-            <button class="tab active" data-tab="openrouter">OpenRouter</button>
-            <button class="tab" data-tab="nvidia">NVIDIA NIM</button>
-        </div>
-
-        <div id="openrouter-tab" class="tab-content active">
-            <div class="card">
-                <h2>OpenRouter Configuration</h2>
-                <div class="field">
-                    <label>API Key</label>
-                    <input type="password" id="openrouter-key" placeholder="sk-or-v1-..." value="$openrouter_key">
-                </div>
-            </div>
-            <div class="card">
-                <h2>Model Settings</h2>
-                <div class="field-row">
-                    <div class="field">
-                        <label>Model</label>
-                        <input type="text" id="model" value="$model">
-                    </div>
-                    <div class="field">
-                        <label>Temperature</label>
-                        <input type="number" step="0.1" min="0" max="2" id="temperature" value="$temperature">
-                    </div>
-                </div>
-                <div class="field">
-                    <label>Max Tokens</label>
-                    <input type="number" id="max_tokens" value="$max_tokens">
-                </div>
-            </div>
-        </div>
-
-        <div id="nvidia-tab" class="tab-content">
-            <div class="card">
-                <h2>NVIDIA NIM Configuration</h2>
-                <div class="field">
-                    <label>NVIDIA API Key</label>
-                    <input type="password" id="nvidia-key" placeholder="nvapi-..." value="$nvidia_key">
-                </div>
-                <div class="field">
-                    <label>NIM API Base URL</label>
-                    <input type="text" id="nvidia-url" placeholder="https://integrate.api.nvidia.com/v1" value="$nvidia_url">
-                </div>
-            </div>
-            <div class="card">
-                <h2>Model Settings</h2>
-                <div class="field-row">
-                    <div class="field">
-                        <label>Model</label>
-                        <input type="text" id="nvidia-model" value="$nvidia_model">
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="btn-group">
-            <button class="btn" id="save-btn">Save Configuration</button>
-            <button class="btn btn-secondary" id="test-btn">Test Connection</button>
-        </div>
-
-        <div class="card">
-            <h2>Application Logs</h2>
-            <div class="logs" id="logs">Loading logs...</div>
-            <button class="btn btn-secondary" id="refresh-logs" style="margin-top: 12px;">Refresh Logs</button>
-        </div>
-    </div>
-
-    <script>
-        // Tab switching
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                tab.classList.add('active');
-                document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
-            });
-        });
-
-        // Load saved config
-        async function loadConfig() {
-            try {
-                const res = await fetch('/api/config');
-                const data = await res.json();
-                if (data.openrouter_key_set) document.getElementById('openrouter-key').placeholder = '•••••••• (saved)';
-                if (data.nvidia_key_set) document.getElementById('nvidia-key').placeholder = '•••••••• (saved)';
-                if (data.nvidia_url) document.getElementById('nvidia-url').value = data.nvidia_url;
-                if (data.model) document.getElementById('model').value = data.model;
-                if (data.nvidia_model) document.getElementById('nvidia-model').value = data.nvidia_model;
-                if (data.temperature) document.getElementById('temperature').value = data.temperature;
-                if (data.max_tokens) document.getElementById('max_tokens').value = data.max_tokens;
-                updateProviderUI(data.provider || 'openrouter');
-            } catch (e) {
-                console.error('Failed to load config:', e);
-            }
-        }
-
-        function updateProviderUI(provider) {
-            // Backend normalizes to 'nvidia_nim'; the tab buttons use 'nvidia'.
-            const tabId = (provider === 'nvidia_nim' || provider === 'nvidia') ? 'nvidia' : 'openrouter';
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector('.tab[data-tab="' + tabId + '"]').classList.add('active');
-            document.getElementById(tabId + '-tab').classList.add('active');
-        }
-
-        // Save config
-        document.getElementById('save-btn').addEventListener('click', async () => {
-            const btn = document.getElementById('save-btn');
-            btn.innerHTML = '<span class="spinner"></span> Saving...';
-            btn.disabled = true;
-
-            const provider = document.querySelector('.tab.active').dataset.tab;
-            const orKey = document.getElementById('openrouter-key').value;
-            const nvKey = document.getElementById('nvidia-key').value;
-            const config = {
-                provider,
-                nvidia_url: document.getElementById('nvidia-url').value,
-                model: document.getElementById('model').value,
-                nvidia_model: document.getElementById('nvidia-model').value,
-                temperature: parseFloat(document.getElementById('temperature').value),
-                max_tokens: parseInt(document.getElementById('max_tokens').value),
-            };
-            // Only send keys if the user actually typed something — an empty
-            // password field just means "unchanged", not "clear the key".
-            if (orKey) config.openrouter_key = orKey;
-            if (nvKey) config.nvidia_key = nvKey;
-
-            try {
-                const res = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(config)
-                });
-                const data = await res.json();
-                showStatus(data.message || 'Saved successfully', true);
-            } catch (e) {
-                showStatus('Failed to save: ' + e.message, false);
-            }
-            btn.innerHTML = 'Save Configuration';
-            btn.disabled = false;
-        });
-
-        // Test connection
-        document.getElementById('test-btn').addEventListener('click', async () => {
-            const btn = document.getElementById('test-btn');
-            btn.innerHTML = '<span class="spinner"></span> Testing...';
-            btn.disabled = true;
-
-            const provider = document.querySelector('.tab.active').dataset.tab;
-            const orKey = document.getElementById('openrouter-key').value;
-            const nvKey = document.getElementById('nvidia-key').value;
-            const testConfig = {
-                provider,
-                nvidia_url: document.getElementById('nvidia-url').value,
-                model: document.getElementById('model').value,
-                nvidia_model: document.getElementById('nvidia-model').value,
-            };
-            if (orKey) testConfig.openrouter_key = orKey;
-            if (nvKey) testConfig.nvidia_key = nvKey;
-
-            try {
-                const res = await fetch('/api/test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(testConfig)
-                });
-                const data = await res.json();
-                showStatus(data.message || data.error || (data.success ? 'Connection successful!' : 'Connection failed'), data.success);
-            } catch (e) {
-                showStatus('Test failed: ' + e.message, false);
-            }
-            btn.innerHTML = 'Test Connection';
-            btn.disabled = false;
-        });
-
-        // Refresh logs
-        document.getElementById('refresh-logs').addEventListener('click', loadLogs);
-
-        async function loadLogs() {
-            try {
-                const res = await fetch('/api/logs');
-                const data = await res.json();
-                const logsEl = document.getElementById('logs');
-                logsEl.innerHTML = data.logs.map(l =>
-                    '<div class="log-line ' + l.level + '">[' + l.time + '] ' + l.message + '</div>'
-                ).join('');
-                logsEl.scrollTop = logsEl.scrollHeight;
-            } catch (e) {
-                console.error('Failed to load logs:', e);
-            }
-        }
-
-        function showStatus(message, success) {
-            const statusEl = document.getElementById('status');
-            statusEl.className = 'status ' + (success ? 'ok' : 'error');
-            statusEl.textContent = message;
-            statusEl.style.display = 'block';
-            setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
-        }
-
-        // Initialize
-        loadConfig();
-        loadLogs();
-
-        // Auto-refresh logs every 10 seconds
-        setInterval(loadLogs, 10000);
-    </script>
-</body>
-</html>
-""")
 
 WEB_DIR = Path(__file__).parent / "web"
 
 
 class WebUIHandler(SimpleHTTPRequestHandler):
+    """HTTP handler for Web UI - serves static files and API endpoints."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
+        print(f"DEBUG: Handler directory = {self.directory}", file=sys.stderr)
+
+    def end_headers(self):
+        # Add CORS headers for local development
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.end_headers()
 
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == '/' or path == '/index.html':
-            self.send_html()
-        elif path == '/api/config':
-            self.send_config()
-        elif path == '/api/logs':
-            self.send_logs()
-        elif path == '/api/status':
-            self.send_status()
-        else:
+        if path == "/" or path == "/index.html":
+            self.serve_index()
+        elif path == "/api/config":
+            self.serve_config()
+        elif path == "/api/logs":
+            self.serve_logs()
+        elif path == "/api/status":
+            self.serve_status()
+        elif path == "/api/workflows":
+            self.serve_workflows()
+        elif path == "/api/models":
+            self.serve_models()
+        elif path.startswith("/static/"):
             super().do_GET()
+        else:
+            self.send_error(404)
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -361,121 +119,260 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         body = self.rfile.read(content_length).decode('utf-8')
         data = json.loads(body) if body else {}
 
-        if path == '/api/config':
+        if path == "/api/config":
             self.save_config(data)
-        elif path == '/api/test':
+        elif path == "/api/test-connection":
             self.test_connection(data)
+        elif path == "/api/workflows":
+            self.create_workflow(data)
+        elif path == "/api/workflows/execute":
+            self.execute_workflow(data)
         else:
             self.send_error(404)
 
-    def send_html(self):
+    def serve_index(self):
+        """Serve the main HTML page from static files."""
+        index_file = WEB_DIR / "static" / "index.html"
+        if index_file.exists():
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            with open(index_file, "rb") as f:
+                self.wfile.write(f.read())
+        else:
+            self.send_error(404)
+
+    def serve_config(self):
+        """Serve current configuration."""
         config = self.get_config()
-        provider = normalize_provider(config.get('provider'))
-
-        # Prepare template variables
-        template_vars = {
-            'openrouter_key': config.get('openrouter_key', ''),
-            'nvidia_key': config.get('nvidia_key', ''),
-            'nvidia_url': config.get('nvidia_url', '') or 'https://integrate.api.nvidia.com/v1',
-            'model': config.get('model', '') or DEFAULT_CONFIG.get('model', ''),
-            'nvidia_model': config.get('nvidia_model', '') or DEFAULT_CONFIG.get('nvidia_model', ''),
-            'temperature': config.get('temperature', DEFAULT_CONFIG.get('temperature', 0.2)),
-            'max_tokens': config.get('max_tokens', DEFAULT_CONFIG.get('max_tokens', 1000)),
-        }
-
-        # Use Template.substitute which uses $variable syntax
-        html = HTML_TEMPLATE.substitute(template_vars)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
-
-    def get_config(self):
-        return load_config()
-
-    def send_config(self):
-        config = self.get_config()
-        # Don't send actual keys in GET response for security, but DO send
-        # whether a key is present so the UI can show a placeholder/state.
+        # Don't send actual keys in GET response for security
         safe_config = {k: v for k, v in config.items() if 'key' not in k.lower()}
-        safe_config['provider'] = normalize_provider(config.get('provider'))
-        safe_config['openrouter_key_set'] = bool(config.get('openrouter_key'))
-        safe_config['nvidia_key_set'] = bool(config.get('nvidia_key'))
+        runtime = get_runtime(config)
+        safe_config["provider"] = runtime["provider"]
+        safe_config["openrouter_key_set"] = bool(config.get("openrouter_key"))
+        safe_config["nvidia_key_set"] = bool(config.get("nvidia_key"))
+        safe_config["nvidia_url"] = config.get("nvidia_url", "")
+        safe_config["model"] = config.get("model", "")
+        safe_config["nvidia_model"] = config.get("nvidia_model", "")
+        safe_config["temperature"] = config.get("temperature", 0.2)
+        safe_config["max_tokens"] = config.get("max_tokens", 1000)
         self.send_json(safe_config)
 
-    def get_provider(self):
-        return normalize_provider(self.get_config().get('provider'))
-
-    def send_logs(self):
-        log_file = Path.home() / ".local" / "share" / "linai" / "logs" / "linai.log"
-        if not log_file.exists():
-            log_file = CONFIG_DIR / "linai.log"
-        if not log_file.exists():
-            log_file = Path.home() / ".linai.log"
-
-        logs = []
-        if log_file.exists():
-            try:
-                with open(log_file) as f:
-                    for line in f.readlines()[-100:]:
-                        line = line.strip()
-                        if line:
-                            # Try to parse timestamp and level
-                            level = "info"
-                            if "ERROR" in line.upper():
-                                level = "error"
-                            elif "WARN" in line.upper():
-                                level = "warn"
-                            elif "SUCCESS" in line.upper():
-                                level = "success"
-                            logs.append({"time": "", "level": level, "message": line})
-            except Exception:
-                pass
-
-        self.send_json({"logs": logs})
-
-    def send_status(self):
+    def serve_status(self):
+        """Serve system status."""
         try:
             from linai.utils import get_system_status, get_disk_free_report
             status = {
                 "system": get_system_status(),
                 "disk": get_disk_free_report(),
-                "provider": self.get_provider(),
+                "provider": self.get_provider_info(),
+                "api_key_configured": bool(self.get_api_key()),
             }
-        except ImportError:
-            status = {"system": "N/A", "disk": "N/A", "provider": self.get_provider()}
+        except Exception:
+            status = {
+                "system": {"cpu_percent": 0, "memory_percent": 0},
+                "disk": {"percent": 0},
+                "provider": self.get_provider_info(),
+                "api_key_configured": bool(self.get_api_key()),
+            }
         self.send_json(status)
 
-    def send_json(self, data):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+    def serve_logs(self):
+        """Serve recent logs with level info."""
+        logs = self.get_logs(200)
+        self.send_json({"logs": logs})
+
+    def serve_workflows(self):
+        """Serve saved workflows."""
+        workflows = self.get_workflows()
+        self.send_json({"workflows": workflows})
+
+    def serve_models(self):
+        """Serve available models with provider info."""
+        models = self.get_models()
+        self.send_json({"models": models})
 
     def save_config(self, data):
-        config_save(data)
-        self.send_json({"success": True, "message": "Configuration saved"})
+        """Update configuration from POST data."""
+        config = config_save(data)
+
+        # Return safe config (without keys)
+        safe_config = {k: v for k, v in config.items() if 'key' not in k.lower()}
+        runtime = get_runtime(config)
+        safe_config["provider"] = runtime["provider"]
+        safe_config["openrouter_key_set"] = bool(config.get("openrouter_key"))
+        safe_config["nvidia_key_set"] = bool(config.get("nvidia_key"))
+
+        self.send_json({"success": True, "config": safe_config})
+
+    def create_workflow(self, data):
+        """Create a new workflow."""
+        import uuid
+        workflows_file = CONFIG_DIR / "workflows.json"
+        workflows = {}
+        if workflows_file.exists():
+            try:
+                with open(workflows_file) as f:
+                    workflows = json.load(f)
+            except Exception:
+                pass
+
+        workflow_id = str(uuid.uuid4())[:8]
+        workflows[workflow_id] = {
+            **data,
+            "created_at": time.time(),
+        }
+
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(workflows_file, "w") as f:
+            json.dump(workflows, f, indent=2)
+
+        self.send_json({"success": True, "workflow_id": workflow_id})
+
+    def execute_workflow(self, data):
+        """Execute a workflow."""
+        workflow_id = data.get("workflow_id")
+        from linai.tools import tool_execute_workflow
+        result = tool_execute_workflow({"workflow_id": workflow_id})
+        self.send_json({"success": True, "result": result})
 
     def test_connection(self, data):
-        # Persist whatever was just entered so get_runtime() sees it, then
-        # resolve using the *saved* config rather than re-deriving ad hoc
-        # provider/url/key logic here (that duplication is what caused the
-        # NVIDIA tab to silently test against an OpenRouter model before).
+        """Test API connection."""
+        # Save the test config temporarily, then use get_runtime to resolve
         cfg = config_save(data) if data else load_config()
         runtime = get_runtime(cfg)
+        result = self.test_api_connection(runtime["provider"], runtime["api_key"], runtime["model"])
+        self.send_json(result)
 
-        api_key = runtime["api_key"]
-        url = runtime["api_url"]
-        model = runtime["model"]
+    def get_config(self):
+        return load_config()
+
+    def get_provider_info(self):
+        """Get current provider information."""
+        runtime = get_runtime()
+        return {
+            "provider": runtime["provider"],
+            "api_url": runtime["api_url"],
+            "key_configured": bool(runtime["api_key"]),
+            "default_model": runtime["model"],
+        }
+
+    def get_api_key(self):
+        """Get the current API key."""
+        return get_runtime()["api_key"]
+
+    def get_logs(self, lines: int = 200):
+        """Get recent log entries with parsed level and time."""
+        log_file = Path.home() / ".local" / "share" / "linai" / "logs" / "linai.log"
+        if not log_file.exists():
+            alt_locations = [
+                CONFIG_DIR / "linai.log",
+                Path.home() / ".linai.log",
+            ]
+            for loc in alt_locations:
+                if loc.exists():
+                    log_file = loc
+                    break
+            else:
+                return [{"time": "", "level": "info", "message": "No log file found"}]
+
+        try:
+            with open(log_file) as f:
+                all_lines = f.readlines()
+
+            logs = []
+            for line in all_lines[-lines:]:
+                line = line.rstrip()
+                if not line:
+                    continue
+
+                # Try to parse timestamp and level from log line
+                time_str = ""
+                level = "info"
+                message = line
+
+                if " - " in line:
+                    parts = line.split(" - ", 2)
+                    if len(parts) >= 3:
+                        time_str = parts[0]
+                        level_part = parts[1].upper()
+                        message = parts[2]
+
+                        if "ERROR" in level_part:
+                            level = "error"
+                        elif "WARN" in level_part:
+                            level = "warn"
+                        elif "INFO" in level_part:
+                            level = "info"
+                        elif "DEBUG" in level_part:
+                            level = "info"
+                        elif "SUCCESS" in level_part:
+                            level = "success"
+                    elif len(parts) == 2:
+                        time_str = parts[0]
+                        message = parts[1]
+
+                logs.append({"time": time_str, "level": level, "message": message})
+
+            return logs
+        except Exception as e:
+            return [{"time": "", "level": "error", "message": f"Error reading logs: {e}"}]
+
+    def get_workflows(self):
+        """Get saved workflows."""
+        workflows_file = CONFIG_DIR / "workflows.json"
+        if not workflows_file.exists():
+            return []
+
+        try:
+            with open(workflows_file) as f:
+                workflows = json.load(f)
+            return [
+                {"id": k, **v}
+                for k, v in workflows.items()
+            ]
+        except Exception:
+            return []
+
+    def get_models(self):
+        """Fetch available models from the API."""
+        runtime = get_runtime()
+        API_MODELS_URL, API_KEY = runtime["models_url"], runtime["api_key"]
         provider = runtime["provider"]
 
-        if not api_key:
-            self.send_json({"success": False, "error": f"No API key configured for {provider}"})
-            return
-        if not model:
-            self.send_json({"success": False, "error": f"No model configured for {provider}"})
-            return
+        if not API_KEY:
+            return []
+
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                API_MODELS_URL,
+                headers={"Authorization": f"Bearer {API_KEY}"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.load(r)
+            models = data.get("data", [])
+            return [
+                {
+                    "id": m.get("id", ""),
+                    "provider": provider,
+                    "pricing": m.get("pricing", {}),
+                    "context_length": m.get("context_length", 0),
+                }
+                for m in models[:100]
+            ]
+        except Exception:
+            return []
+
+    def test_api_connection(self, provider: str, api_key: str, model: str):
+        """Test API connection with given credentials."""
+        import urllib.request
+        import urllib.error
+
+        if provider == "nvidia_nim":
+            url = f"https://integrate.api.nvidia.com/v1/chat/completions"
+        else:
+            url = "https://openrouter.ai/api/v1/chat/completions"
 
         body = json.dumps({
             "model": model,
@@ -488,7 +385,7 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             "Content-Type": "application/json",
         }
         if provider == "openrouter":
-            headers["HTTP-Referer"] = "https://github.com/linai"
+            headers["HTTP-Referer"] = "https://github.com/Abhinav-Sharmaaaa/LinAI"
             headers["X-Title"] = "linai"
 
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -496,11 +393,18 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = json.load(r)
             content = data["choices"][0]["message"]["content"]
-            self.send_json({"success": True, "message": f"Connection successful! Response: {content[:50]}"})
+            return {"success": True, "response": content[:100]}
         except urllib.error.HTTPError as e:
-            self.send_json({"success": False, "error": f"HTTP {e.code}: {e.reason}"})
+            return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
         except Exception as e:
-            self.send_json({"success": False, "error": str(e)})
+            return {"success": False, "error": str(e)}
+
+    def send_json(self, data):
+        """Send JSON response."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
 
 
 class WebServer:

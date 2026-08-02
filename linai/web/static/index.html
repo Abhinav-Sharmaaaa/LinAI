@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>linai — Configuration & Monitoring</title>
+    <meta name="description" content="linai Web UI — Configure providers, manage workflows, and monitor system status">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                    <span class="logo-text">linai</span>
+                </div>
+                <nav class="nav-tabs" role="tablist" aria-label="Main navigation">
+                    <button class="nav-tab active" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+                    <button class="nav-tab" role="tab" data-tab="providers" aria-selected="false">Providers</button>
+                    <button class="nav-tab" role="tab" data-tab="workflows" aria-selected="false">Workflows</button>
+                    <button class="nav-tab" role="tab" data-tab="models" aria-selected="false">Models</button>
+                    <button class="nav-tab" role="tab" data-tab="logs" aria-selected="false">Logs</button>
+                </nav>
+            </div>
+            <div class="header-right">
+                <button class="icon-btn" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+                    <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"/>
+                        <line x1="12" y1="1" x2="12" y2="3"/>
+                        <line x1="12" y1="21" x2="12" y2="23"/>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                        <line x1="1" y1="12" x2="3" y2="12"/>
+                        <line x1="21" y1="12" x2="23" y2="12"/>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                    </svg>
+                </button>
+                <div class="status-indicator" id="connection-status" title="Connection status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Checking...</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="main">
+            <!-- Overview Tab -->
+            <section class="tab-panel active" role="tabpanel" data-tab="overview" aria-labelledby="overview-tab">
+                <div class="grid grid-3">
+                    <div class="card stat-card">
+                        <div class="stat-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                                <path d="M8 21h8"/>
+                                <path d="M12 17v4"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-cpu">--%</span>
+                            <span class="stat-label">CPU Usage</span>
+                        </div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="stat-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                                <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                                <line x1="12" y1="22.08" x2="12" y2="12"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-memory">--%</span>
+                            <span class="stat-label">Memory Usage</span>
+                        </div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="stat-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M12 6v6l4 2"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-disk">--%</span>
+                            <span class="stat-label">Disk Usage</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Provider Status</h2>
+                            <span class="badge" id="provider-badge">Unknown</span>
+                        </div>
+                        <div class="provider-info" id="provider-info">
+                            <div class="info-row">
+                                <span class="info-label">Provider:</span>
+                                <span class="info-value" id="current-provider">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Model:</span>
+                                <span class="info-value" id="current-model">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">API Key:</span>
+                                <span class="info-value" id="api-key-status">Not configured</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Endpoint:</span>
+                                <span class="info-value" id="api-endpoint">--</span>
+                            </div>
+                        </div>
+                        <div class="card-actions">
+                            <button class="btn btn-primary" id="test-connection-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                                    <polyline points="15 3 21 3 21 9"/>
+                                    <line x1="10" y1="14" x2="21" y2="3"/>
+                                </svg>
+                                Test Connection
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Quick Actions</h2>
+                        </div>
+                        <div class="action-grid">
+                            <button class="action-btn" data-action="new-workflow">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                                </svg>
+                                <span>New Workflow</span>
+                            </button>
+                            <button class="action-btn" data-action="refresh-models">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 2v6h-6"/>
+                                    <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+                                    <path d="M3 22v-6h6"/>
+                                    <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                                </svg>
+                                <span>Refresh Models</span>
+                            </button>
+                            <button class="action-btn" data-action="view-logs">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                                </svg>
+                                <span>View Logs</span>
+                            </button>
+                            <button class="action-btn" data-action="export-config">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                <span>Export Config</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>System Resources</h2>
+                        </div>
+                        <div class="resource-bars" id="resource-bars">
+                            <div class="resource-bar">
+                                <div class="resource-label">
+                                    <span>CPU</span>
+                                    <span id="cpu-percent">--%</span>
+                                </div>
+                                <div class="progress-bar"><div class="progress-fill" id="cpu-bar" style="width: 0%"></div></div>
+                            </div>
+                            <div class="resource-bar">
+                                <div class="resource-label">
+                                    <span>Memory</span>
+                                    <span id="memory-percent">--%</span>
+                                </div>
+                                <div class="progress-bar"><div class="progress-fill" id="memory-bar" style="width: 0%"></div></div>
+                            </div>
+                            <div class="resource-bar">
+                                <div class="resource-label">
+                                    <span>Disk</span>
+                                    <span id="disk-percent">--%</span>
+                                </div>
+                                <div class="progress-bar"><div class="progress-fill" id="disk-bar" style="width: 0%"></div></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Recent Activity</h2>
+                        </div>
+                        <div class="activity-list" id="activity-list">
+                            <div class="activity-empty">Loading activity...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Providers Tab -->
+            <section class="tab-panel" role="tabpanel" data-tab="providers" aria-labelledby="providers-tab">
+                <div class="grid grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>OpenRouter</h2>
+                            <span class="badge provider-badge" data-provider="openrouter">Select</span>
+                        </div>
+                        <div class="provider-form" id="openrouter-form">
+                            <div class="form-group">
+                                <label for="or-api-key">API Key</label>
+                                <div class="input-with-toggle">
+                                    <input type="password" id="or-api-key" placeholder="sk-or-v1-..." autocomplete="off">
+                                    <button type="button" class="icon-btn toggle-visibility" data-target="or-api-key" aria-label="Toggle visibility">
+                                        <svg class="icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                            <circle cx="12" cy="12" r="3"/>
+                                        </svg>
+                                        <svg class="icon-eye-off" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                                            <line x1="1" y1="1" x2="23" y2="23"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <p class="form-hint">Stored securely in config. Leave blank to keep current.</p>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="or-model">Model</label>
+                                    <select id="or-model" class="model-select">
+                                        <option value="">Select a model...</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="or-temperature">Temperature</label>
+                                    <input type="range" id="or-temperature" min="0" max="2" step="0.1" value="0.2">
+                                    <span class="range-value" id="or-temp-value">0.2</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="or-max-tokens">Max Tokens</label>
+                                <input type="number" id="or-max-tokens" min="1" max="100000" value="1000">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>NVIDIA NIM</h2>
+                            <span class="badge provider-badge" data-provider="nvidia_nim">Select</span>
+                        </div>
+                        <div class="provider-form" id="nvidia-form">
+                            <div class="form-group">
+                                <label for="nv-api-key">API Key</label>
+                                <div class="input-with-toggle">
+                                    <input type="password" id="nv-api-key" placeholder="nvapi-..." autocomplete="off">
+                                    <button type="button" class="icon-btn toggle-visibility" data-target="nv-api-key" aria-label="Toggle visibility">
+                                        <svg class="icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                            <circle cx="12" cy="12" r="3"/>
+                                        </svg>
+                                        <svg class="icon-eye-off" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                                            <line x1="1" y1="1" x2="23" y2="23"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <p class="form-hint">Stored securely in config. Leave blank to keep current.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="nv-api-url">API Base URL</label>
+                                <input type="url" id="nv-api-url" placeholder="https://integrate.api.nvidia.com/v1" value="https://integrate.api.nvidia.com/v1">
+                            </div>
+                            <div class="form-group">
+                                <label for="nv-model">Model</label>
+                                <select id="nv-model" class="model-select">
+                                    <option value="">Select a model...</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="nv-temperature">Temperature</label>
+                                <input type="range" id="nv-temperature" min="0" max="2" step="0.1" value="0.2">
+                                <span class="range-value" id="nv-temp-value">0.2</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="nv-max-tokens">Max Tokens</label>
+                                <input type="number" id="nv-max-tokens" min="1" max="100000" value="1000">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Save Configuration</h2>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" id="save-config-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                <polyline points="17 21 17 13 7 13 7 21"/>
+                                <polyline points="7 3 7 8 15 8"/>
+                            </svg>
+                            Save Configuration
+                        </button>
+                        <button class="btn btn-secondary" id="export-config-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            Export Config
+                        </button>
+                        <button class="btn btn-secondary" id="import-config-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                            Import Config
+                        </button>
+                        <input type="file" id="import-file" accept=".json" style="display: none;">
+                    </div>
+                </div>
+            </section>
+
+            <!-- Workflows Tab -->
+            <section class="tab-panel" role="tabpanel" data-tab="workflows" aria-labelledby="workflows-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Workflows</h2>
+                        <button class="btn btn-primary" id="new-workflow-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            New Workflow
+                        </button>
+                    </div>
+                    <div class="workflow-list" id="workflow-list">
+                        <div class="loading">Loading workflows...</div>
+                    </div>
+                </div>
+
+                <!-- Workflow Modal -->
+                <div class="modal" id="workflow-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-modal-title">
+                    <div class="modal-overlay"></div>
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3 id="workflow-modal-title">Create Workflow</h3>
+                            <button class="icon-btn modal-close" aria-label="Close modal">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"/>
+                                    <line x1="6" y1="6" x2="18" y2="18"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <form id="workflow-form">
+                            <input type="hidden" id="workflow-id">
+                            <div class="form-group">
+                                <label for="wf-name">Name</label>
+                                <input type="text" id="wf-name" placeholder="My workflow" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="wf-description">Description</label>
+                                <textarea id="wf-description" rows="3" placeholder="What does this workflow do?"></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label>Steps</label>
+                                <div id="workflow-steps">
+                                    <div class="step-item">
+                                        <input type="text" class="step-input" placeholder="Step 1: e.g., Analyze codebase for bugs">
+                                        <button type="button" class="icon-btn step-remove" aria-label="Remove step">
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                                <line x1="6" y1="6" x2="18" y2="18"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn btn-secondary btn-sm" id="add-step-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="12" y1="5" x2="12" y2="19"/>
+                                        <line x1="5" y1="12" x2="19" y2="12"/>
+                                    </svg>
+                                    Add Step
+                                </button>
+                            </div>
+                            <div class="modal-actions">
+                                <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                                <button type="submit" class="btn btn-primary">Save Workflow</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Models Tab -->
+            <section class="tab-panel" role="tabpanel" data-tab="models" aria-labelledby="models-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Available Models</h2>
+                        <div class="header-actions">
+                            <select id="model-provider-filter">
+                                <option value="all">All Providers</option>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="nvidia_nim">NVIDIA NIM</option>
+                            </select>
+                            <button class="btn btn-secondary" id="refresh-models-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 2v6h-6"/>
+                                    <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+                                    <path d="M3 22v-6h6"/>
+                                    <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                                </svg>
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="models-table-container">
+                        <table class="models-table" id="models-table">
+                            <thead>
+                                <tr>
+                                    <th>Model ID</th>
+                                    <th>Provider</th>
+                                    <th>Context Length</th>
+                                    <th>Pricing (Input/Output)</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="models-tbody">
+                                <tr><td colspan="5" class="loading-cell">Loading models...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Logs Tab -->
+            <section class="tab-panel" role="tabpanel" data-tab="logs" aria-labelledby="logs-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Application Logs</h2>
+                        <div class="header-actions">
+                            <select id="log-level-filter">
+                                <option value="all">All Levels</option>
+                                <option value="error">Error</option>
+                                <option value="warn">Warning</option>
+                                <option value="info">Info</option>
+                                <option value="success">Success</option>
+                            </select>
+                            <button class="btn btn-secondary" id="refresh-logs-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 2v6h-6"/>
+                                    <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+                                    <path d="M3 22v-6h6"/>
+                                    <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                                </svg>
+                                Refresh
+                            </button>
+                            <button class="btn btn-secondary" id="clear-logs-btn">Clear</button>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="auto-refresh-logs" checked>
+                                <span>Auto-refresh</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="logs-container" id="logs-container">
+                        <div class="logs-content" id="logs-content">
+                            <div class="loading">Loading logs...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <div class="footer-left">
+                <span>linai Web UI</span>
+                <span class="version" id="app-version">v1.0.0</span>
+            </div>
+            <div class="footer-right">
+                <a href="https://github.com/Abhinav-Sharmaaaa/LinAI" target="_blank" rel="noopener" class="footer-link">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                    GitHub
+                </a>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script type="module" src="/static/app.js"></script>
+</body>
+</html>

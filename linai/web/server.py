@@ -27,6 +27,18 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         self.web_root = Path(__file__).parent / "static"
         super().__init__(*args, directory=str(self.web_root), **kwargs)
 
+    def end_headers(self):
+        # Add CORS headers for local development
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -44,6 +56,10 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         elif path == "/api/models":
             self.serve_models()
         elif path.startswith("/static/"):
+            # web_root already points at the "static" folder, so strip the
+            # "/static" prefix before delegating, otherwise
+            # SimpleHTTPRequestHandler looks for static/static/<file>
+            self.path = path[len("/static"):] or "/"
             super().do_GET()
         else:
             self.send_error(404)
@@ -78,21 +94,40 @@ class WebUIHandler(SimpleHTTPRequestHandler):
     def serve_config(self):
         """Serve current configuration."""
         config = self.get_config()
-        self.send_json(config)
+        # Don't send actual keys in GET response for security
+        safe_config = {k: v for k, v in config.items() if 'key' not in k.lower()}
+        runtime = get_runtime(config)
+        safe_config["provider"] = runtime["provider"]
+        safe_config["openrouter_key_set"] = bool(config.get("openrouter_key"))
+        safe_config["nvidia_key_set"] = bool(config.get("nvidia_key"))
+        safe_config["nvidia_url"] = config.get("nvidia_url", "")
+        safe_config["model"] = config.get("model", "")
+        safe_config["nvidia_model"] = config.get("nvidia_model", "")
+        safe_config["temperature"] = config.get("temperature", 0.2)
+        safe_config["max_tokens"] = config.get("max_tokens", 1000)
+        self.send_json(safe_config)
 
     def serve_status(self):
         """Serve system status."""
-        status = {
-            "system": get_system_status(),
-            "disk": get_disk_free_report(),
-            "provider": self.get_provider_info(),
-            "api_key_configured": bool(self.get_api_key()),
-        }
+        try:
+            status = {
+                "system": get_system_status(),
+                "disk": get_disk_free_report(),
+                "provider": self.get_provider_info(),
+                "api_key_configured": bool(self.get_api_key()),
+            }
+        except Exception as e:
+            status = {
+                "system": {"cpu_percent": 0, "memory_percent": 0},
+                "disk": {"percent": 0},
+                "provider": self.get_provider_info(),
+                "api_key_configured": bool(self.get_api_key()),
+            }
         self.send_json(status)
 
     def serve_logs(self):
-        """Serve recent logs."""
-        logs = self.get_logs()
+        """Serve recent logs with level info."""
+        logs = self.get_logs(200)
         self.send_json({"logs": logs})
 
     def serve_workflows(self):
@@ -101,7 +136,7 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         self.send_json({"workflows": workflows})
 
     def serve_models(self):
-        """Serve available models."""
+        """Serve available models with provider info."""
         models = self.get_models()
         self.send_json({"models": models})
 
@@ -113,7 +148,14 @@ class WebUIHandler(SimpleHTTPRequestHandler):
 
         config = config_save(data)
 
-        self.send_json({"success": True, "config": config})
+        # Return safe config (without keys)
+        safe_config = {k: v for k, v in config.items() if 'key' not in k.lower()}
+        runtime = get_runtime(config)
+        safe_config["provider"] = runtime["provider"]
+        safe_config["openrouter_key_set"] = bool(config.get("openrouter_key"))
+        safe_config["nvidia_key_set"] = bool(config.get("nvidia_key"))
+
+        self.send_json({"success": True, "config": safe_config})
 
     def create_workflow(self):
         """Create a new workflow."""
@@ -138,8 +180,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         """Test API connection."""
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length).decode("utf-8")
-        data = json.loads(post_data)
+        data = json.loads(post_data) if post_data else {}
 
+        # Save the test config temporarily, then use get_runtime to resolve
         cfg = config_save(data) if data else load_config()
         runtime = get_runtime(cfg)
         result = self.test_api_connection(runtime["provider"], runtime["api_key"], runtime["model"])
@@ -163,8 +206,8 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         """Get the current API key."""
         return get_runtime()["api_key"]
 
-    def get_logs(self, lines: int = 100) -> list[str]:
-        """Get recent log entries."""
+    def get_logs(self, lines: int = 200) -> list[dict[str, Any]]:
+        """Get recent log entries with parsed level and time."""
         log_file = Path(HOME) / ".local" / "share" / "linai" / "logs" / "linai.log"
         if not log_file.exists():
             # Try alternative locations
@@ -177,14 +220,51 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     log_file = loc
                     break
             else:
-                return ["No log file found"]
+                return [{"time": "", "level": "info", "message": "No log file found"}]
 
         try:
             with open(log_file) as f:
                 all_lines = f.readlines()
-            return [line.rstrip() for line in all_lines[-lines:]]
+
+            logs = []
+            for line in all_lines[-lines:]:
+                line = line.rstrip()
+                if not line:
+                    continue
+
+                # Try to parse timestamp and level from log line
+                # Format: 2024-01-15 10:30:45,123 - LEVEL - message
+                time_str = ""
+                level = "info"
+                message = line
+
+                # Check for common log formats
+                if " - " in line:
+                    parts = line.split(" - ", 2)
+                    if len(parts) >= 3:
+                        time_str = parts[0]
+                        level_part = parts[1].upper()
+                        message = parts[2]
+
+                        if "ERROR" in level_part:
+                            level = "error"
+                        elif "WARN" in level_part:
+                            level = "warn"
+                        elif "INFO" in level_part:
+                            level = "info"
+                        elif "DEBUG" in level_part:
+                            level = "info"
+                        elif "SUCCESS" in level_part:
+                            level = "success"
+                    elif len(parts) == 2:
+                        time_str = parts[0]
+                        message = parts[1]
+
+                logs.append({"time": time_str, "level": level, "message": message})
+
+            return logs
         except Exception as e:
-            return [f"Error reading logs: {e}"]
+            return [{"time": "", "level": "error", "message": f"Error reading logs: {e}"}]
 
     def get_workflows(self) -> list[dict[str, Any]]:
         """Get saved workflows."""
@@ -235,6 +315,11 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         """Fetch available models from the API."""
         runtime = get_runtime()
         API_MODELS_URL, API_KEY = runtime["models_url"], runtime["api_key"]
+        provider = runtime["provider"]
+
+        if not API_KEY:
+            return []
+
         try:
             import urllib.request
             req = urllib.request.Request(
@@ -247,10 +332,11 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             return [
                 {
                     "id": m.get("id", ""),
+                    "provider": provider,
                     "pricing": m.get("pricing", {}),
                     "context_length": m.get("context_length", 0),
                 }
-                for m in models[:50]  # Limit to 50
+                for m in models[:100]  # Limit to 100
             ]
         except Exception:
             return []
